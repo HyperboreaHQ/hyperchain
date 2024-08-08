@@ -2,7 +2,7 @@
 
 Hyperchain is an essential component of the hyperbloom application.
 
-Hyperchain provides essential mechanisms for creating a custom
+Hyperchain provides mechanisms for creating a custom
 proof of authority (private) blockchains on the hyperborea protocol.
 
 These blockchains are autonomous and are directly controlled by one
