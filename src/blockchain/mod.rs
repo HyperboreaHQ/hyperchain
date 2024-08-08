@@ -47,23 +47,38 @@ pub enum BlockchainValidationError {
     CryptographyError(#[from] CryptographyError)
 }
 
+#[async_trait::async_trait]
 pub trait Blockchain {
+    /// Get public key of the blockchain's authority.
+    async fn get_authority(&self) -> PublicKey;
+
     /// Get root block.
-    fn get_root(&self) -> Option<Block>;
+    async fn get_root(&self) -> Option<Block>;
+
+    /// Get blockchain's tail (last) block.
+    async fn get_tail(&self) -> Option<Block>;
 
     /// Get block by its hash.
-    fn get_block(&self, hash: u64) -> Option<Block>;
+    async fn get_block(&self, hash: u64) -> Option<Block>;
 
     /// Get block next to the given one.
-    fn get_next_block(&self, hash: u64) -> Option<Block>;
+    async fn get_next_block(&self, hash: u64) -> Option<Block>;
 
-    /// Get public key of the blockchain's authority.
-    fn get_authority(&self) -> &PublicKey;
+    /// Set new blockchain's root block.
+    /// 
+    /// This method can be used to truncate the blockchain.
+    async fn set_root(&self, block: Block);
+
+    /// Try to push block to the blockchain.
+    /// 
+    /// It must reference the current blockchain's tail
+    /// block and have correct signature.
+    async fn push_block(&self, block: Block);
 
     /// Check if the blockchain is empty
     /// (doesn't have a root node).
-    fn is_empty(&self) -> bool {
-        self.get_root().is_none()
+    async fn is_empty(&self) -> bool {
+        self.get_root().await.is_none()
     }
 
     /// Check if the blockchain is truncated.
@@ -72,8 +87,8 @@ pub trait Blockchain {
     /// another block but it was dropped to save space.
     /// 
     /// Truncated blockchains can't be fully validated.
-    fn is_truncated(&self) -> bool {
-        match self.get_root() {
+    async fn is_truncated(&self) -> bool {
+        match self.get_root().await {
             Some(block) => block.previous().is_some(),
 
             // Assume by default blockchain is not truncated
@@ -97,16 +112,16 @@ pub trait Blockchain {
     /// Since this method is resource heavy it's recommended
     /// to run it with `since_block` property and cache
     /// results for future validations.
-    fn validate(&self, since_block: Option<u64>) -> Result<BlockchainValidationResult, BlockchainValidationError> {
+    async fn validate(&self, since_block: Option<u64>) -> Result<BlockchainValidationResult, BlockchainValidationError> {
         // Get initial block
         let mut block = match since_block {
-            Some(hash) => match self.get_block(hash) {
+            Some(hash) => match self.get_block(hash).await {
                 Some(block) => Some(block),
 
                 None => return Err(BlockchainValidationError::UnknownBlockHash(hash))
             }
 
-            None => match self.get_root() {
+            None => match self.get_root().await {
                 Some(root) => Some(root),
 
                 // No need in validating empty blockchain
@@ -118,7 +133,7 @@ pub trait Blockchain {
         let max_timestamp = timestamp() + 24 * 60 * 60;
 
         // Blockchain authority's public key
-        let blockchain_authority = self.get_authority();
+        let blockchain_authority = self.get_authority().await;
 
         let mut prev_block_hash = block.as_ref()
             .and_then(|block| block.prev_hash);
@@ -138,7 +153,7 @@ pub trait Blockchain {
             }
 
             // Validate block's signer
-            if curr_block.validator() != blockchain_authority {
+            if curr_block.validator() != &blockchain_authority {
                 return Ok(BlockchainValidationResult::InvalidValidator {
                     block_hash,
                     expected_validator: blockchain_authority.to_owned(),
@@ -167,7 +182,7 @@ pub trait Blockchain {
             last_created_at = curr_block.created_at;
             prev_block_hash = Some(block_hash);
 
-            block = self.get_next_block(block_hash);
+            block = self.get_next_block(block_hash).await;
         }
 
         Ok(BlockchainValidationResult::Valid)
