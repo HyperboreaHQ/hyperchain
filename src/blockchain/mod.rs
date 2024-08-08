@@ -7,13 +7,10 @@ use crate::block::Block;
 
 mod disk_blockchain;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockchainValidationResult {
     /// Unknown block hash.
     UnknownBlockHash(u64),
-
-    /// Cryptography error.
-    CryptographyError(CryptographyError),
 
     /// Invalid previous block hash.
     InvalidPreviosBlockReference {
@@ -39,6 +36,14 @@ pub enum BlockchainValidationResult {
         block_hash: u64,
         validator: PublicKey,
         sign: Vec<u8>
+    },
+
+    /// Failed to verify block's sign.
+    SignVerificationError {
+        block_hash: u64,
+        validator: PublicKey,
+        sign: Vec<u8>,
+        reason: String
     },
 
     /// Blockchain is valid.
@@ -183,7 +188,12 @@ pub trait Blockchain {
                     sign: curr_block.sign
                 }),
 
-                Err(err) => return Ok(BlockchainValidationResult::CryptographyError(err)),
+                Err(err) => return Ok(BlockchainValidationResult::SignVerificationError {
+                    block_hash,
+                    validator: curr_block.validator,
+                    sign: curr_block.sign,
+                    reason: err.to_string()
+                }),
 
                 _ => ()
             }

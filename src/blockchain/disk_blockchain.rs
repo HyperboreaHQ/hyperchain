@@ -257,13 +257,13 @@ impl Blockchain for DiskBlockchain {
 
 #[cfg(test)]
 mod tests {
+    use hyperborealib::crypto::asymmetric::SecretKey;
+
     use super::*;
 
     #[tokio::test]
     async fn authorities() -> Result<(), DiskBlockchainError> {
-        use hyperborealib::crypto::asymmetric::SecretKey;
-
-        let path = std::env::temp_dir().join(".hyperchain.disk-blockchain-test");
+        let path = std::env::temp_dir().join(".hyperchain.disk-blockchain-test.authorities");
 
         let authorities = [
             SecretKey::random(),
@@ -292,6 +292,39 @@ mod tests {
             authorities[1].public_key(),
             authorities[2].public_key()
         ]);
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn blocks() -> Result<(), DiskBlockchainError> {
+        use crate::block::BlockBuilder;
+
+        let path = std::env::temp_dir().join(".hyperchain.disk-blockchain-test.blocks");
+        let validator = SecretKey::random();
+
+        let blockchain = DiskBlockchain::open(path).await?;
+
+        let block_a = BlockBuilder::build_root(b"Block A", &validator);
+        let block_b = BlockBuilder::build_chained(block_a.hash(), b"Block B", &validator);
+        let block_c = BlockBuilder::build_chained(block_b.hash(), b"Block C", &validator);
+
+        blockchain.push_block(block_a.clone()).await?;
+        blockchain.push_block(block_b.clone()).await?;
+        blockchain.push_block(block_c.clone()).await?;
+
+        assert_eq!(blockchain.get_root().await?, Some(block_a.clone()));
+        assert_eq!(blockchain.get_tail().await?, Some(block_c.clone()));
+
+        assert_eq!(blockchain.get_block(block_b.hash()).await?, Some(block_b.clone()));
+        assert_eq!(blockchain.get_block(0).await?, None);
+
+        assert_eq!(blockchain.get_next_block(block_a.hash()).await?, Some(block_b.clone()));
+        assert_eq!(blockchain.get_next_block(block_b.hash()).await?, Some(block_c));
+        assert_eq!(blockchain.get_next_block(0).await?, None);
+
+        assert_eq!(blockchain.validate(None).await?, BlockchainValidationResult::Valid);
+        assert_eq!(blockchain.validate(Some(0)).await?, BlockchainValidationResult::UnknownBlockHash(0));
 
         Ok(())
     }
