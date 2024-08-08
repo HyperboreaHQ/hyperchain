@@ -45,6 +45,9 @@ impl DiskBlockchain {
 
         if !folder.exists() {
             tokio::fs::create_dir_all(&folder.join("blocks")).await?;
+
+            tokio::fs::write(folder.join("authorities"), &[]).await?;
+            tokio::fs::write(folder.join("index"), &[]).await?;
         }
 
         Ok(Self {
@@ -63,9 +66,15 @@ impl DiskBlockchain {
     }
 
     async fn file_append(&self, name: &str, line: &str) -> std::io::Result<()> {
+        let path = self.folder.join(name);
+
+        if !path.exists() {
+            tokio::fs::write(&path, &[]).await?;
+        }
+
         let mut file = File::options()
             .append(true)
-            .open(self.folder.join(name))
+            .open(path)
             .await?;
 
         file.write_all(line.as_bytes()).await?;
@@ -78,7 +87,7 @@ impl DiskBlockchain {
         let original_path = self.folder.join(name);
         let truncated_path = self.folder.join(format!("{name}.truncated"));
 
-        let mut truncated = File::create(self.folder.join(format!("{name}.truncated"))).await?;
+        let mut truncated = File::create(&truncated_path).await?;
 
         let mut lines = self.file_iter(name, SeekFrom::Start(0)).await?;
 
@@ -94,7 +103,7 @@ impl DiskBlockchain {
         drop(truncated);
         drop(lines);
 
-        tokio::fs::rename(original_path, truncated_path).await?;
+        tokio::fs::rename(truncated_path, original_path).await?;
 
         Ok(())
     }
@@ -241,6 +250,48 @@ impl Blockchain for DiskBlockchain {
     async fn push_block(&self, block: Block) -> Result<(), Self::Error> {
         self.file_append("index", &format!("{:x}", block.hash())).await?;
         self.block_write(block).await?;
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn authorities() -> Result<(), DiskBlockchainError> {
+        use hyperborealib::crypto::asymmetric::SecretKey;
+
+        let path = std::env::temp_dir().join(".hyperchain.disk-blockchain-test");
+
+        let authorities = [
+            SecretKey::random(),
+            SecretKey::random(),
+            SecretKey::random()
+        ];
+
+        let blockchain = DiskBlockchain::open(path).await?;
+
+        blockchain.add_authority(authorities[0].public_key()).await?;
+        blockchain.add_authority(authorities[1].public_key()).await?;
+
+        assert_eq!(blockchain.get_authorities().await?, &[
+            authorities[0].public_key(),
+            authorities[1].public_key()
+        ]);
+
+        blockchain.delete_authority(&authorities[0].public_key()).await?;
+
+        assert!(!blockchain.is_authority(&authorities[0].public_key()).await?);
+        assert!(blockchain.is_authority(&authorities[1].public_key()).await?);
+
+        blockchain.add_authority(authorities[2].public_key()).await?;
+
+        assert_eq!(blockchain.get_authorities().await?, &[
+            authorities[1].public_key(),
+            authorities[2].public_key()
+        ]);
 
         Ok(())
     }
