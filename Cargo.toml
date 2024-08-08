@@ -1,0 +1,10 @@
+[package]
+name = "hyperchain"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies.hyperborealib]
+git = "https://github.com/HyperboreaHQ/hyperborealib"
+
+[dependencies]
+seahash = "4.1.0"
