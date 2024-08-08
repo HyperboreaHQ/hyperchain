@@ -6,7 +6,6 @@ use hyperborealib::time::timestamp;
 use crate::block::Block;
 
 mod disk_blockchain;
-// mod sqlite_blockchain;
 
 #[derive(Debug)]
 pub enum BlockchainValidationResult {
