@@ -5,8 +5,17 @@ use hyperborealib::time::timestamp;
 
 use crate::block::Block;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+mod disk_blockchain;
+// mod sqlite_blockchain;
+
+#[derive(Debug)]
 pub enum BlockchainValidationResult {
+    /// Unknown block hash.
+    UnknownBlockHash(u64),
+
+    /// Cryptography error.
+    CryptographyError(CryptographyError),
+
     /// Invalid previous block hash.
     InvalidPreviosBlockReference {
         block_hash: u64,
@@ -23,8 +32,7 @@ pub enum BlockchainValidationResult {
     /// Invalid block validator.
     InvalidValidator {
         block_hash: u64,
-        expected_validator: PublicKey,
-        got_validator: PublicKey
+        validator: PublicKey
     },
 
     /// Invalid block's sign.
@@ -38,47 +46,47 @@ pub enum BlockchainValidationResult {
     Valid
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum BlockchainValidationError {
-    #[error("Unknown block hash: {0:x}")]
-    UnknownBlockHash(u64),
-
-    #[error(transparent)]
-    CryptographyError(#[from] CryptographyError)
-}
-
 #[async_trait::async_trait]
 pub trait Blockchain {
-    /// Get public key of the blockchain's authority.
-    async fn get_authority(&self) -> PublicKey;
+    type Error: std::error::Error + Send + Sync;
+
+    /// Get public keys of blockchain's authorities.
+    async fn get_authorities(&self) -> Result<Vec<PublicKey>, Self::Error>;
+
+    /// Verify that given validator's public key belongs
+    /// to the blockchain's authority.
+    async fn is_authority(&self, validator: &PublicKey) -> Result<bool, Self::Error> {
+        Ok(self.get_authorities().await?.contains(validator))
+    }
+
+    /// Add new blockchain authority.
+    async fn add_authority(&self, validator: PublicKey) -> Result<bool, Self::Error>;
+
+    /// Delete blockchain authority.
+    async fn delete_authority(&self, validator: &PublicKey) -> Result<bool, Self::Error>;
 
     /// Get root block.
-    async fn get_root(&self) -> Option<Block>;
+    async fn get_root(&self) -> Result<Option<Block>, Self::Error>;
 
     /// Get blockchain's tail (last) block.
-    async fn get_tail(&self) -> Option<Block>;
+    async fn get_tail(&self) -> Result<Option<Block>, Self::Error>;
 
     /// Get block by its hash.
-    async fn get_block(&self, hash: u64) -> Option<Block>;
+    async fn get_block(&self, hash: u64) -> Result<Option<Block>, Self::Error>;
 
     /// Get block next to the given one.
-    async fn get_next_block(&self, hash: u64) -> Option<Block>;
-
-    /// Set new blockchain's root block.
-    /// 
-    /// This method can be used to truncate the blockchain.
-    async fn set_root(&self, block: Block);
+    async fn get_next_block(&self, hash: u64) -> Result<Option<Block>, Self::Error>;
 
     /// Try to push block to the blockchain.
     /// 
     /// It must reference the current blockchain's tail
     /// block and have correct signature.
-    async fn push_block(&self, block: Block);
+    async fn push_block(&self, block: Block) -> Result<(), Self::Error>;
 
     /// Check if the blockchain is empty
     /// (doesn't have a root node).
-    async fn is_empty(&self) -> bool {
-        self.get_root().await.is_none()
+    async fn is_empty(&self) -> Result<bool, Self::Error> {
+        Ok(self.get_root().await?.is_none())
     }
 
     /// Check if the blockchain is truncated.
@@ -87,12 +95,12 @@ pub trait Blockchain {
     /// another block but it was dropped to save space.
     /// 
     /// Truncated blockchains can't be fully validated.
-    async fn is_truncated(&self) -> bool {
-        match self.get_root().await {
-            Some(block) => block.previous().is_some(),
+    async fn is_truncated(&self) -> Result<bool, Self::Error> {
+        match self.get_root().await? {
+            Some(block) => Ok(block.previous().is_some()),
 
             // Assume by default blockchain is not truncated
-            None => false
+            None => Ok(false)
         }
     }
 
@@ -112,16 +120,16 @@ pub trait Blockchain {
     /// Since this method is resource heavy it's recommended
     /// to run it with `since_block` property and cache
     /// results for future validations.
-    async fn validate(&self, since_block: Option<u64>) -> Result<BlockchainValidationResult, BlockchainValidationError> {
+    async fn validate(&self, since_block: Option<u64>) -> Result<BlockchainValidationResult, Self::Error> {
         // Get initial block
         let mut block = match since_block {
-            Some(hash) => match self.get_block(hash).await {
+            Some(hash) => match self.get_block(hash).await? {
                 Some(block) => Some(block),
 
-                None => return Err(BlockchainValidationError::UnknownBlockHash(hash))
+                None => return Ok(BlockchainValidationResult::UnknownBlockHash(hash))
             }
 
-            None => match self.get_root().await {
+            None => match self.get_root().await? {
                 Some(root) => Some(root),
 
                 // No need in validating empty blockchain
@@ -132,33 +140,23 @@ pub trait Blockchain {
         // Maximum allowed timestamp (+24h just in case)
         let max_timestamp = timestamp() + 24 * 60 * 60;
 
-        // Blockchain authority's public key
-        let blockchain_authority = self.get_authority().await;
-
+        // Previous block's hash
         let mut prev_block_hash = block.as_ref()
             .and_then(|block| block.prev_hash);
 
-        let mut last_created_at = 0;
+        // Previous block's creation timestamp
+        let mut prev_created_at = 0;
 
         // Validate all the other blocks
         while let Some(curr_block) = block.take() {
             let block_hash = curr_block.hash();
 
             // Validate block's timestamp
-            if curr_block.created_at < last_created_at || curr_block.created_at > max_timestamp {
+            if curr_block.created_at < prev_created_at || curr_block.created_at > max_timestamp {
                 return Ok(BlockchainValidationResult::InvalidCreationTime {
                     block_hash,
                     created_at: curr_block.created_at
                 });
-            }
-
-            // Validate block's signer
-            if curr_block.validator() != &blockchain_authority {
-                return Ok(BlockchainValidationResult::InvalidValidator {
-                    block_hash,
-                    expected_validator: blockchain_authority.to_owned(),
-                    got_validator: curr_block.validator
-                })
             }
 
             // Validate block's previous hash reference
@@ -170,19 +168,31 @@ pub trait Blockchain {
                 });
             }
 
+            // Validate block's signer
+            if self.is_authority(curr_block.validator()).await? {
+                return Ok(BlockchainValidationResult::InvalidValidator {
+                    block_hash,
+                    validator: curr_block.validator
+                })
+            }
+
             // Validate block's sign
-            if !curr_block.validate()? {
-                return Ok(BlockchainValidationResult::InvalidSign {
+            match curr_block.validate() {
+                Ok(false) => return Ok(BlockchainValidationResult::InvalidSign {
                     block_hash,
                     validator: curr_block.validator,
                     sign: curr_block.sign
-                });
+                }),
+
+                Err(err) => return Ok(BlockchainValidationResult::CryptographyError(err)),
+
+                _ => ()
             }
 
-            last_created_at = curr_block.created_at;
+            prev_created_at = curr_block.created_at;
             prev_block_hash = Some(block_hash);
 
-            block = self.get_next_block(block_hash).await;
+            block = self.get_next_block(block_hash).await?;
         }
 
         Ok(BlockchainValidationResult::Valid)
