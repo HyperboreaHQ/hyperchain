@@ -10,7 +10,7 @@ use hyperborealib::rest_api::{
 
 use super::Hash;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockMinter {
     pub(crate) public_key: PublicKey,
     pub(crate) balance_mask: Hash

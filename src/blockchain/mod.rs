@@ -116,31 +116,12 @@ pub trait Blockchain {
             <Self::BlocksIndex as BlocksIndex>::Error
         >
     > {
-        self.validate_since_block_number(0).await
+        self.validate_since(0).await
     }
 
-    /// Validate blockchain structure starting from block
-    /// with given hash.
-    async fn validate_since_block_hash<A, B>(&self, since_block_hash: Hash) -> Result<
-        BlockchainValidationResult,
-        BlockchainValidationError<
-            <Self::AuthoritiesIndex as AuthoritiesIndex>::Error,
-            <Self::BlocksIndex as BlocksIndex>::Error
-        >
-    > {
-        let block = self.blocks_index_ref()
-            .get_block_by_hash(since_block_hash).await
-            .map_err(BlockchainValidationError::BlocksIndex)?;
-
-        match block {
-            Some(block) => self.validate_since_block_number(block.number).await,
-            None => Ok(BlockchainValidationResult::UnknownBlockHash(since_block_hash))
-        }
-    }
-
-    /// Validate blockchain structure starting from block
-    /// with given number.
-    async fn validate_since_block_number(&self, since_block_number: u64) -> Result<
+    /// Validate blockchain structure starting
+    /// from the block with a given number.
+    async fn validate_since(&self, start_block_number: u64) -> Result<
         BlockchainValidationResult,
         BlockchainValidationError<
             <Self::AuthoritiesIndex as AuthoritiesIndex>::Error,
@@ -151,8 +132,8 @@ pub trait Blockchain {
         let blocks = self.blocks_index();
 
         // Get initial block
-        let mut block = if since_block_number > 0 {
-            blocks.get_block_by_number(since_block_number).await
+        let mut block = if start_block_number > 0 {
+            blocks.get_block(start_block_number).await
                 .map_err(BlockchainValidationError::BlocksIndex)?
         } else {
             blocks.get_root_block().await
@@ -169,8 +150,8 @@ pub trait Blockchain {
         // Previous block's creation timestamp
         let mut prev_created_at = 0;
 
-        let mut prev_number = if since_block_number > 0 {
-            since_block_number - 1
+        let mut prev_number = if start_block_number > 0 {
+            start_block_number - 1
         } else {
             0
         };

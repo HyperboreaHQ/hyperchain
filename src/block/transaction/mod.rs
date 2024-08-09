@@ -27,7 +27,7 @@ pub enum TransactionValidationError {
     HashCalculationError(#[from] std::io::Error)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, std::hash::Hash)]
 pub enum TransactionValidationResult {
     /// Invalid creation timestamp.
     InvalidCreationTime {
@@ -56,7 +56,7 @@ impl TransactionValidationResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, std::hash::Hash, Serialize, Deserialize)]
 pub struct Transaction {
     // Header
     pub(crate) hash: Hash,

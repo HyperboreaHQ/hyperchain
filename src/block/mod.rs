@@ -66,7 +66,7 @@ impl BlockValidationResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Block {
     // Header
     pub(crate) previous_block: Option<Hash>,

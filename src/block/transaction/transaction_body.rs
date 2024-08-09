@@ -16,7 +16,7 @@ use crate::block::Hash;
 
 use super::TransactionType;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, std::hash::Hash, Serialize, Deserialize)]
 pub enum TransactionBody {
     Message {
         from: PublicKey,

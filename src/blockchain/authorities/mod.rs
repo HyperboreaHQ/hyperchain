@@ -4,6 +4,8 @@ use hyperborealib::crypto::asymmetric::PublicKey;
 
 mod authorities_file;
 
+pub use authorities_file::*;
+
 #[async_trait::async_trait]
 /// Trait implementing this struct should hold information
 /// about the blockchain's authorities (blocks validators).

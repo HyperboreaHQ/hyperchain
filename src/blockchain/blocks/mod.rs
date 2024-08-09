@@ -1,7 +1,8 @@
-use crate::block::{
-    Block,
-    Hash
-};
+use crate::block::Block;
+
+mod chunked_blocks;
+
+pub use chunked_blocks::*;
 
 #[async_trait::async_trait]
 /// Trait implementing this struct should manage information
@@ -10,10 +11,7 @@ pub trait BlocksIndex {
     type Error: std::error::Error + Send + Sync;
 
     /// Try to get a block by its number.
-    async fn get_block_by_number(&self, number: u64) -> Result<Option<Block>, Self::Error>;
-
-    /// Try to get a block by its hash.
-    async fn get_block_by_hash(&self, hash: Hash) -> Result<Option<Block>, Self::Error>;
+    async fn get_block(&self, number: u64) -> Result<Option<Block>, Self::Error>;
 
     /// Try to push a new block to the index.
     /// 
@@ -25,7 +23,7 @@ pub trait BlocksIndex {
     /// 
     /// This method should have the fastest next block lookup implementation.
     async fn get_next_block(&self, block: &Block) -> Result<Option<Block>, Self::Error> {
-        self.get_block_by_number(block.number + 1).await
+        self.get_block(block.number + 1).await
     }
 
     /// Try to get the root block.
@@ -33,7 +31,7 @@ pub trait BlocksIndex {
     /// This method must return the same value
     /// as `get_block_by_number(0)`.
     async fn get_root_block(&self) -> Result<Option<Block>, Self::Error> {
-        self.get_block_by_number(0).await
+        self.get_block(0).await
     }
 
     /// Try to get the tail (latest) block.
@@ -43,7 +41,7 @@ pub trait BlocksIndex {
         };
 
         loop {
-            match self.get_block_by_number(block.number + 1).await? {
+            match self.get_block(block.number + 1).await? {
                 Some(next_block) => block = next_block,
 
                 None => return Ok(Some(block))

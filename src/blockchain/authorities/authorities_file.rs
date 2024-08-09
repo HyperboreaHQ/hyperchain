@@ -19,7 +19,7 @@ pub struct AuthoritiesFile {
 
 impl AuthoritiesFile {
     /// Open or create authorities file.
-    pub async fn new(path: impl Into<PathBuf>) -> std::io::Result<Self> {
+    pub async fn open(path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path: PathBuf = path.into();
 
         if let Some(parent) = path.parent() {
@@ -100,7 +100,7 @@ impl AuthoritiesIndex for AuthoritiesFile {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     #[tokio::test]
@@ -114,13 +114,15 @@ pub(crate) mod tests {
             tokio::fs::remove_file(&path).await?;
         }
 
+        // Prepare authorities list
         let authorities = [
             SecretKey::random(),
             SecretKey::random(),
             SecretKey::random()
         ];
 
-        let index = AuthoritiesFile::new(path).await?;
+        // Run the tests
+        let index = AuthoritiesFile::open(path).await?;
 
         assert!(index.get_authorities().await?.is_empty());
 
@@ -132,6 +134,7 @@ pub(crate) mod tests {
         assert!(!index.is_authority(&authorities[1].public_key()).await?);
         assert!(!index.is_authority(&authorities[2].public_key()).await?);
 
+        // Push 1 and 2
         assert!(index.insert_authority(authorities[0].public_key()).await?);
         assert!(index.insert_authority(authorities[1].public_key()).await?);
 
@@ -144,6 +147,7 @@ pub(crate) mod tests {
         assert!(index.is_authority(&authorities[1].public_key()).await?);
         assert!(!index.is_authority(&authorities[2].public_key()).await?);
 
+        // Delete 1 and 2
         assert!(index.delete_authority(&authorities[0].public_key()).await?);
         assert!(index.delete_authority(&authorities[1].public_key()).await?);
         assert!(!index.delete_authority(&authorities[2].public_key()).await?);
