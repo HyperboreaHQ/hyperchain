@@ -127,6 +127,13 @@ impl BlockBuilder {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use crate::block::transaction::builder::tests::{
+        get_message,
+        get_announcement
+    };
+
+    use crate::block::minter::tests::get_minter;
+
     use super::*;
 
     pub fn get_root() -> (Block, SecretKey) {
@@ -141,6 +148,9 @@ pub(crate) mod tests {
         let (root, secret) = get_root();
 
         let block = BlockBuilder::chained(&root)
+            .add_transaction(get_message().0)
+            .add_transaction(get_announcement().0)
+            .add_minter(get_minter().0)
             .sign(&secret);
 
         (root, block, secret)

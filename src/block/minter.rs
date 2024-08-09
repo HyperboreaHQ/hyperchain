@@ -97,7 +97,7 @@ pub(crate) mod tests {
 
     use super::*;
 
-    fn get_minter() -> (BlockMinter, SecretKey) {
+    pub fn get_minter() -> (BlockMinter, SecretKey) {
         let secret = SecretKey::random();
 
         let minter = BlockMinter::new(secret.public_key(), Hash::MAX);

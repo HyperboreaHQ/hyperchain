@@ -10,9 +10,9 @@ use hyperborealib::time::timestamp;
 
 use crate::block::Hash;
 
-mod transaction_type;
-mod transaction_body;
-mod builder;
+pub(crate) mod transaction_type;
+pub(crate) mod transaction_body;
+pub(crate) mod builder;
 
 pub use transaction_type::*;
 pub use transaction_body::*;
