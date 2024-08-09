@@ -10,37 +10,37 @@ mod disk_blockchain;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockchainValidationResult {
     /// Unknown block hash.
-    UnknownBlockHash(u64),
+    UnknownBlockHash(String),
 
     /// Invalid previous block hash.
     InvalidPreviosBlockReference {
-        block_hash: u64,
-        expected_previous: Option<u64>,
-        got_previous: Option<u64>
+        block_hash: String,
+        expected_previous: Option<String>,
+        got_previous: Option<String>
     },
 
     /// Invalid block creation time.
     InvalidCreationTime {
-        block_hash: u64,
+        block_hash: String,
         created_at: u64
     },
 
     /// Invalid block validator.
     InvalidValidator {
-        block_hash: u64,
+        block_hash: String,
         validator: PublicKey
     },
 
     /// Invalid block's sign.
     InvalidSign {
-        block_hash: u64,
+        block_hash: String,
         validator: PublicKey,
         sign: Vec<u8>
     },
 
     /// Failed to verify block's sign.
     SignVerificationError {
-        block_hash: u64,
+        block_hash: String,
         validator: PublicKey,
         sign: Vec<u8>,
         reason: String
@@ -124,7 +124,7 @@ pub trait Blockchain {
     /// Since this method is resource heavy it's recommended
     /// to run it with `since_block` property and cache
     /// results for future validations.
-    async fn validate(&self, since_block: Option<u64>) -> Result<BlockchainValidationResult, Self::Error> {
+    async fn validate(&self, since_block: Option<String>) -> Result<BlockchainValidationResult, Self::Error> {
         // Get initial block
         let mut block = match since_block {
             Some(hash) => match self.get_block(hash).await? {

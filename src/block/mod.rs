@@ -1,5 +1,3 @@
-use std::hash::Hasher;
-
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value as Json};
 
@@ -7,21 +5,81 @@ use hyperborealib::crypto::asymmetric::PublicKey;
 use hyperborealib::crypto::encoding::base64;
 use hyperborealib::crypto::Error as CryptographyError;
 
+use hyperborealib::time::timestamp;
+
 use hyperborealib::rest_api::{
     AsJson,
     AsJsonError
 };
 
+mod hash;
+mod transaction;
+mod minter;
 mod builder;
 
-pub use builder::BlockBuilder;
+pub use hash::*;
+pub use transaction::*;
+pub use minter::*;
+pub use builder::*;
+
+#[derive(Debug, thiserror::Error)]
+pub enum BlockValidationError {
+    #[error("Failed to verify signature: {0}")]
+    SignVerificationError(#[from] CryptographyError),
+
+    #[error("Failed to validate transaction: {0}")]
+    TransactionValidationError(#[from] TransactionValidationError)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum BlockValidationResult {
+    /// Invalid creation timestamp.
+    InvalidCreationTime {
+        created_at: u64
+    },
+
+    /// Invalid hash.
+    InvalidHash {
+        stored: Hash,
+        calculated: Hash
+    },
+
+    /// Invalid hash signature.
+    InvalidSign {
+        hash: Hash,
+        sign: Vec<u8>
+    },
+
+    /// Invalid transaction.
+    InvalidTransaction {
+        transaction: Box<Transaction>,
+        error: TransactionValidationResult,
+    },
+
+    Valid
+}
+
+impl BlockValidationResult {
+    #[inline]
+    pub fn is_valid(&self) -> bool {
+        self == &Self::Valid
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Block {
-    pub(crate) prev_hash: Option<u64>,
-    pub(crate) created_at: u64,
+    // Header
+    pub(crate) previous_block: Option<Hash>,
+    pub(crate) hash: Hash,
+    pub(crate) number: u64,
+
+    // Metadata
     pub(crate) random_seed: u64,
-    pub(crate) data: Vec<u8>,
+    pub(crate) created_at: u64,
+
+    // Body
+    pub(crate) transactions: Vec<Transaction>,
+    pub(crate) minters: Vec<BlockMinter>,
     pub(crate) validator: PublicKey,
     pub(crate) sign: Vec<u8>
 }
@@ -29,8 +87,14 @@ pub struct Block {
 impl Block {
     #[inline]
     /// Hash of the previous block.
-    pub fn previous(&self) -> Option<u64> {
-        self.prev_hash
+    pub fn previous_block(&self) -> Option<Hash> {
+        self.previous_block
+    }
+
+    #[inline]
+    /// Number of the block in the blockchain.
+    pub fn number(&self) -> u64 {
+        self.number
     }
 
     #[inline]
@@ -41,16 +105,15 @@ impl Block {
     }
 
     #[inline]
-    /// Sustainably random number to ensure
-    /// that the block will have unique hash.
-    pub fn random_seed(&self) -> u64 {
-        self.random_seed
+    /// List of transactions signed in this block.
+    pub fn transactions(&self) -> &[Transaction] {
+        &self.transactions
     }
 
     #[inline]
-    /// Content of the block.
-    pub fn data(&self) -> &[u8] {
-        &self.data
+    /// List of minters participated in this block's creation.
+    pub fn minters(&self) -> &[BlockMinter] {
+        &self.minters
     }
 
     #[inline]
@@ -65,31 +128,99 @@ impl Block {
         &self.sign
     }
 
-    /// Get hash of the current block.
+    #[inline]
+    /// Get hash stored in the block.
     /// 
-    /// This is a relatively heavy function
-    /// and should not be called frequently.
-    pub fn hash(&self) -> u64 {
-        let mut hasher = seahash::SeaHasher::new();
-
-        if let Some(hash) = &self.prev_hash {
-            hasher.write(&hash.to_be_bytes());
-        }
-
-        hasher.write(&self.created_at.to_be_bytes());
-        hasher.write(&self.random_seed.to_be_bytes());
-        hasher.write(&self.data);
-        hasher.write(&self.validator.to_bytes());
-
-        hasher.finish()
+    /// This method will not validate this hash so
+    /// you should treat its value as insecure.
+    pub fn get_hash(&self) -> Hash {
+        self.hash
     }
 
-    /// Verify block's signature using
-    /// `hash()` method and stored `validator` value.
-    pub fn validate(&self) -> Result<bool, CryptographyError> {
-        let hash = self.hash();
+    /// Calculate hash of the block.
+    /// 
+    /// This is a relatively heavy function and
+    /// it should not be called often.
+    pub fn calculate_hash(&self) -> Hash {
+        let mut hasher = blake3::Hasher::new();
 
-        self.validator.verify_signature(hash.to_be_bytes(), &self.sign)
+        // Header
+        if let Some(hash) = &self.previous_block {
+            hasher.update(&hash.as_bytes());
+        }
+
+        hasher.update(&self.number.to_be_bytes());
+
+        // Metadata
+        hasher.update(&self.random_seed.to_be_bytes());
+        hasher.update(&self.created_at.to_be_bytes());
+
+        // Body
+        for transaction in &self.transactions {
+            hasher.update(&transaction.calculate_hash().as_bytes());
+        }
+
+        for minter in &self.minters {
+            hasher.update(&minter.hash().as_bytes());
+        }
+
+        hasher.finalize().into()
+    }
+
+    /// Validate block.
+    /// 
+    /// This method will:
+    /// 
+    /// 1. Verify that the block's creation time
+    ///    is not higher than the current UTC time.
+    /// 
+    /// 2. Calculate block hash and compare it
+    ///    with stored value.
+    /// 
+    /// 3. Verify block's signature.
+    /// 
+    /// 4. Verify each stored transaction.
+    /// 
+    /// This is not recommended to call this method often.
+    pub fn validate(&self) -> Result<BlockValidationResult, BlockValidationError> {
+        // Validate block's creation time (+24h just in case)
+        if self.created_at > timestamp() + 24 * 60 * 60 {
+            return Ok(BlockValidationResult::InvalidCreationTime {
+                created_at: self.created_at
+            });
+        }
+
+        // Validate block's hash
+        let hash = self.calculate_hash();
+
+        if self.hash != hash {
+            return Ok(BlockValidationResult::InvalidHash {
+                stored: self.hash,
+                calculated: hash
+            });
+        }
+
+        // Validate block hash's signature
+        if !self.validator.verify_signature(self.hash.as_bytes(), &self.sign)? {
+            return Ok(BlockValidationResult::InvalidSign {
+                hash: self.hash,
+                sign: self.sign.clone()
+            });
+        }
+
+        // Validate block's stored transactions
+        for transaction in &self.transactions {
+            let result = transaction.validate()?;
+
+            if !result.is_valid() {
+                return Ok(BlockValidationResult::InvalidTransaction {
+                    transaction: Box::new(transaction.clone()),
+                    error: result
+                });
+            }
+        }
+
+        Ok(BlockValidationResult::Valid)
     }
 }
 
@@ -98,13 +229,22 @@ impl AsJson for Block {
         Ok(json!({
             "format": 1,
             "block": {
-                "previous": self.prev_hash,
+                "previous": self.previous_block.map(|hash| hash.to_base64()),
+                "current": self.hash.to_base64(),
+                "number": self.number,
                 "metadata": {
-                    "created_at": self.created_at,
-                    "random_seed": self.random_seed
+                    "random_seed": self.random_seed,
+                    "created_at": self.created_at
                 },
                 "content": {
-                    "data": base64::encode(&self.data),
+                    "transactions": self.transactions.iter()
+                        .map(|transaction| transaction.to_json())
+                        .collect::<Result<Vec<_>, _>>()?,
+
+                    "minters": self.minters.iter()
+                        .map(|minter| minter.to_json())
+                        .collect::<Result<Vec<_>, _>>()?,
+
                     "validator": self.validator.to_base64(),
                     "sign": base64::encode(&self.sign)
                 }
@@ -132,29 +272,58 @@ impl AsJson for Block {
                 };
 
                 Ok(Self {
-                    prev_hash: block.get("previous")
+                    previous_block: block.get("previous")
                         .and_then(|value| {
                             if value.is_null() {
                                 Some(None)
+                            } else if let Some(hash) = value.as_str() {
+                                match Hash::from_base64(hash) {
+                                    Ok(hash) => Some(Some(hash)),
+
+                                    // FIXME: return this error
+                                    Err(_) => None
+                                }
                             } else {
-                                value.as_u64()
-                                    .map(Some)
+                                None
                             }
                         })
                         .ok_or_else(|| AsJsonError::FieldValueInvalid("block.previous"))?,
 
-                    created_at: metadata.get("created_at")
+                    hash: block.get("current")
+                        .and_then(Json::as_str)
+                        .map(Hash::from_base64)
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.current"))?
+                        .map_err(|err| AsJsonError::Other(err.into()))?,
+
+                    number: block.get("number")
                         .and_then(Json::as_u64)
-                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.metadata.created_at"))?,
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.number"))?,
 
                     random_seed: metadata.get("random_seed")
                         .and_then(Json::as_u64)
                         .ok_or_else(|| AsJsonError::FieldValueInvalid("block.metadata.random_seed"))?,
 
-                    data: content.get("data")
-                        .and_then(Json::as_str)
-                        .map(base64::decode)
-                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.content.data"))??,
+                    created_at: metadata.get("created_at")
+                        .and_then(Json::as_u64)
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.metadata.created_at"))?,
+
+                    transactions: content.get("transactions")
+                        .and_then(Json::as_array)
+                        .map(|transactions| {
+                            transactions.iter()
+                                .map(Transaction::from_json)
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.content.transactions"))??,
+
+                    minters: content.get("minters")
+                        .and_then(Json::as_array)
+                        .map(|minters| {
+                            minters.iter()
+                                .map(BlockMinter::from_json)
+                                .collect::<Result<Vec<_>, _>>()
+                        })
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.content.minters"))??,
 
                     validator: content.get("validator")
                         .and_then(Json::as_str)
@@ -168,18 +337,18 @@ impl AsJson for Block {
                 })
             }
 
-            _ => Err(AsJsonError::FieldValueInvalid("format"))
+            version => Err(AsJsonError::InvalidStandard(version))
         }
     }
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
     fn serialize() -> Result<(), AsJsonError> {
-        let block = builder::tests::get_block().0;
+        let block = builder::tests::get_chained().1;
 
         assert_eq!(Block::from_json(&block.to_json()?)?, block);
 
