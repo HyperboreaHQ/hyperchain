@@ -7,11 +7,11 @@ use crate::block::*;
 
 mod authorities;
 mod blocks;
+mod basic_blockchain;
 
 pub use authorities::*;
 pub use blocks::*;
-
-// mod disk_blockchain;
+pub use basic_blockchain::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BlockchainValidationError<A, B> {
