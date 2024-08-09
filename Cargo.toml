@@ -14,7 +14,3 @@ thiserror = "1.0"
 async-trait = "0.1"
 
 blake3 = "1.5.3"
-hex = "0.4.3"
-
-# SQLite blockchain implementation
-rusqlite = { version = "0.32", features = ["blob", "bundled"] }
