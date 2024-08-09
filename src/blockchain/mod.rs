@@ -5,11 +5,11 @@ use hyperborealib::time::timestamp;
 
 use crate::block::*;
 
-mod authorities_index;
-mod blocks_index;
+mod authorities;
+mod blocks;
 
-pub use authorities_index::*;
-pub use blocks_index::*;
+pub use authorities::*;
+pub use blocks::*;
 
 // mod disk_blockchain;
 
