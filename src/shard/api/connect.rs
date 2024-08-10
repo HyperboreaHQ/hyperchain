@@ -147,7 +147,7 @@ impl AsJson for ConnectResponse {
                                         .map(Transaction::from_json)
                                         .collect::<Result<Vec<_>, _>>()
                                 })
-                                .ok_or_else(|| AsJsonError::FieldNotFound("body.transactions"))??,
+                                .ok_or_else(|| AsJsonError::FieldNotFound("body.transactions"))??
                         })
                     }
 
@@ -204,6 +204,7 @@ mod tests {
                     get_message().0
                 ]
             },
+
             ConnectResponse::Aborted
         ];
 
