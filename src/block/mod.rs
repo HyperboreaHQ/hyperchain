@@ -12,10 +12,10 @@ use hyperborealib::rest_api::{
     AsJsonError
 };
 
-mod hash;
-mod transaction;
-mod minter;
-mod builder;
+pub(crate) mod hash;
+pub(crate) mod transaction;
+pub(crate) mod minter;
+pub(crate) mod builder;
 
 pub use hash::*;
 pub use transaction::*;
@@ -343,7 +343,7 @@ impl AsJson for Block {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     #[test]
