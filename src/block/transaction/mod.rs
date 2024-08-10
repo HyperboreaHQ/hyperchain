@@ -237,7 +237,7 @@ impl AsJson for Transaction {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use crate::block::transaction::builder::tests::{
         get_message,
         get_announcement
