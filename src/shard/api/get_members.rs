@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value as Json};
 
@@ -10,7 +12,7 @@ use crate::shard::ShardMember;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Request shard members.
-/// 
+///
 /// Channel: `hyperchain/<name>/v1/request/get_members`.
 pub struct GetMembersRequest;
 
@@ -34,12 +36,12 @@ impl AsJson for GetMembersRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Response shard members.
-/// 
+///
 /// Channel: `hyperchain/<name>/v1/response/get_members`.
 pub struct GetMembersResponse {
-    pub members: Vec<ShardMember>
+    pub members: HashSet<ShardMember>
 }
 
 impl AsJson for GetMembersResponse {
@@ -65,7 +67,7 @@ impl AsJson for GetMembersResponse {
                     .map(|members| {
                         members.iter()
                             .map(ShardMember::from_json)
-                            .collect::<Result<Vec<_>, _>>()
+                            .collect::<Result<HashSet<_>, _>>()
                     })
                     .ok_or_else(|| AsJsonError::FieldNotFound("members"))??
             }),
@@ -93,11 +95,11 @@ mod tests {
     #[test]
     fn serialize_response() -> Result<(), AsJsonError> {
         let response = GetMembersResponse {
-            members: vec![
+            members: HashSet::from([
                 get_member(),
                 get_member(),
                 get_member()
-            ]
+            ])
         };
 
         assert_eq!(GetMembersResponse::from_json(&response.to_json()?)?, response);

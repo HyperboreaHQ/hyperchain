@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 
-use serde::{Serialize, Deserialize};
+use serde_json::Value as Json;
 
+use hyperborealib::crypto::prelude::*;
 use hyperborealib::http::HttpClient;
-use hyperborealib::crypto::compression::CompressionLevel;
+
+use hyperborealib::exports::tokio;
 
 use hyperborealib::rest_api::{
     AsJson,
@@ -21,45 +23,19 @@ use hyperborealib::rest_api::types::{
     MessagesError
 };
 
-mod member;
+use crate::block::BlockValidationError;
 
-mod remote;
+mod member;
+mod info;
 mod owned;
+mod remote;
 
 pub use member::*;
+pub use info::*;
+pub use owned::*;
+pub use remote::*;
 
 pub mod api;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// Information about the network shard.
-pub struct ShardInfo {
-    name: String,
-    owner: ShardMember,
-    members: HashSet<ShardMember>
-}
-
-impl ShardInfo {
-    #[inline]
-    /// Get shard's name.
-    /// 
-    /// It is used in hyperborea inbox's channel
-    /// to distinguish different shards.
-    pub fn name(&self) -> &str {
-        &self.name
-    }
-
-    #[inline]
-    /// Get shard's owner.
-    pub fn owner(&self) -> &ShardMember {
-        &self.owner
-    }
-
-    #[inline]
-    /// Get shard's members.
-    pub fn members(&self) -> &HashSet<ShardMember> {
-        &self.members
-    }
-}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ShardError {
@@ -73,7 +49,79 @@ pub enum ShardError {
     Json(#[from] AsJsonError),
 
     #[error(transparent)]
-    Serialize(#[from] serde_json::Error)
+    Serialize(#[from] serde_json::Error),
+
+    #[error(transparent)]
+    Validation(#[from] BlockValidationError),
+
+    #[error("Invalid block obtained")]
+    InvalidBlock
+}
+
+pub(crate) async fn send<T: AsJson, F: HttpClient>(
+    middleware: &ConnectedClient<F>,
+    member: &ShardMember,
+    channel: impl std::fmt::Display,
+    message: T
+) -> Result<(), ShardError> {
+    // Prepare message
+    let encoding = MessageEncoding::new(
+        Encoding::Base64,
+        Encryption::None,
+        Compression::Brotli
+    );
+
+    let message = Message::create(
+        middleware.driver_ref().secret_key(),
+        &member.client_public,
+        serde_json::to_vec(&message.to_json()?)?,
+        encoding,
+        CompressionLevel::Balanced
+    )?;
+
+    // Send message to the member
+    middleware.send(
+        &member.server_address,
+        member.client_public.clone(),
+        channel,
+        message
+    ).await?;
+
+    Ok(())
+}
+
+pub(crate) async fn poll<T: AsJson, F: HttpClient>(
+    middleware: &ConnectedClient<F>,
+    channel: impl AsRef<str>
+) -> Result<T, ShardError> {
+    let mut delay = 0;
+
+    // Await message
+    loop {
+        let messages = middleware.poll(channel.as_ref(), Some(1))
+            .await?.0;
+
+        // If message polled
+        if let Some(message) = messages.first() {
+            // Read the message
+            let message = message.message.read(
+                middleware.driver_ref().secret_key(),
+                &message.sender.client.public_key,
+            )?;
+
+            // Deserialize JSON
+            let message = serde_json::from_slice::<Json>(&message)?;
+
+            // Deserialize the response
+            return Ok(T::from_json(&message)?);
+        }
+
+        // Increase timeout by 1 second
+        delay += 1;
+
+        // Wait some time before polling message again
+        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+    }
 }
 
 #[derive(Debug)]
@@ -102,41 +150,52 @@ impl<T: HttpClient> Shard<T> {
     }
 
     /// Try connecting to the remote shard.
-    pub async fn connect(self, owner: ShardMember) -> Result<(), ShardError> {
-        // Prepare connect request
-        let request = api::ConnectRequest;
-
-        let encoding = MessageEncoding::default();
-
-        let message = Message::create(
-            self.middleware.driver_ref().secret_key(),
-            &owner.client_public,
-            serde_json::to_vec(&request.to_json()?)?,
-            encoding,
-            CompressionLevel::Fast
-        )?;
-
-        // Send request to the owner
-        self.middleware.send(
-            &owner.server_address,
-            owner.client_public.clone(),
-            format!("hyperchain/{}/request/connect", &self.name),
-            message
+    pub async fn connect(self, owner: ShardMember) -> Result<Option<RemoteShard<T>>, ShardError> {
+        send(
+            &self.middleware,
+            &owner,
+            format!("hyperchain/{}/v1/request/connect", &self.name),
+            api::ConnectRequest
         ).await?;
 
-        // Await connect response
-        loop {
-            let messages = self.middleware.poll(
-                format!("hyperchain/{}/response/connect", &self.name),
-                None
-            ).await?.0;
+        let response = poll(
+            &self.middleware,
+            format!("hyperchain/{}/v1/response/connect", &self.name)
+        ).await?;
 
-            for message in messages {
-                // Process messages from the owner only
-                if message.sender.client.public_key == owner.client_public {
-                    
-                }
+        match response {
+            api::ConnectResponse::Connected {
+                members,
+                root_block,
+                tail_block,
+                transactions
+            } => {
+                Ok(Some(RemoteShard {
+                    middleware: self.middleware,
+
+                    info: ShardInfo {
+                        name: self.name,
+                        owner,
+                        members,
+                    },
+
+                    root_block,
+                    tail_block,
+
+                    staged_transactions: transactions
+                        .iter()
+                        .map(|transaction| transaction.get_hash())
+                        .collect(),
+
+                    transactions_handler: None,
+                    block_handler: None,
+
+                    transactions_pool: transactions,
+                    blocks_pool: HashSet::new()
+                }))
             }
+
+            api::ConnectResponse::Aborted => Ok(None)
         }
     }
 }

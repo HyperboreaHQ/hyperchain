@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value as Json};
 
@@ -10,14 +12,14 @@ use crate::block::Block;
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Request blocks slice.
-/// 
+///
 /// Channel: `hyperchain/<name>/v1/request/get_blocks`.
 pub struct GetBlocksRequest {
     /// Request blocks starting (and including) from this one.
     pub from_number: u64,
 
     /// Maximum amount of blocks to return.
-    /// 
+    ///
     /// If `None`, then the upper value is chosen by the shard owner.
     /// Returned amount of blocks can be smaller than requested one.
     pub max_amount: Option<u64>
@@ -67,25 +69,25 @@ impl AsJson for GetBlocksRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Response blocks slice.
-/// 
+///
 /// Channel: `hyperchain/<name>/v1/response/get_blocks`.
 pub struct GetBlocksResponse {
     /// Root block of the blockchain.
-    /// 
+    ///
     /// It's needed to verify that the shard's blockchain
     /// is valid and the one you need.
     pub root_block: Block,
 
     /// Tail block of the blockchain.
-    /// 
+    ///
     /// It's needed to verify amount of remained
     /// blocks that are needed to be requested.
     pub tail_block: Block,
 
     /// Requested blocks (or at least some of them).
-    pub requested_blocks: Vec<Block>
+    pub requested_blocks: HashSet<Block>
 }
 
 impl AsJson for GetBlocksResponse {
@@ -98,7 +100,7 @@ impl AsJson for GetBlocksResponse {
 
                 "requested": self.requested_blocks.iter()
                     .map(Block::to_json)
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .collect::<Result<HashSet<_>, _>>()?,
             }
         }))
     }
@@ -128,7 +130,7 @@ impl AsJson for GetBlocksResponse {
                         .map(|members| {
                             members.iter()
                                 .map(Block::from_json)
-                                .collect::<Result<Vec<_>, _>>()
+                                .collect::<Result<HashSet<_>, _>>()
                         })
                         .ok_or_else(|| AsJsonError::FieldNotFound("blocks.requested"))??
                 })
@@ -174,11 +176,11 @@ mod tests {
         let response = GetBlocksResponse {
             root_block: get_root().0,
             tail_block: get_chained().1,
-            requested_blocks: vec![
+            requested_blocks: HashSet::from([
                 get_root().0,
                 get_chained().1,
                 get_chained().1
-            ]
+            ])
         };
 
         assert_eq!(GetBlocksResponse::from_json(&response.to_json()?)?, response);

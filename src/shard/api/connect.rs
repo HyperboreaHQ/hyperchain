@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value as Json};
 
@@ -39,7 +41,7 @@ impl AsJson for ConnectRequest {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)]
 /// Response on connection to the shard.
 /// 
@@ -48,7 +50,7 @@ pub enum ConnectResponse {
     /// Connection allowed.
     Connected {
         /// List of members connected to this shard.
-        members: Vec<ShardMember>,
+        members: HashSet<ShardMember>,
 
         /// Blockchain's root block.
         root_block: Block,
@@ -61,7 +63,7 @@ pub enum ConnectResponse {
         /// 
         /// This list may not be full. You can request
         /// it separately later.
-        transactions: Vec<Transaction>
+        transactions: HashSet<Transaction>
     },
 
     /// Connection aborted.
@@ -128,7 +130,7 @@ impl AsJson for ConnectResponse {
                                 .map(|members| {
                                     members.iter()
                                         .map(ShardMember::from_json)
-                                        .collect::<Result<Vec<_>, _>>()
+                                        .collect::<Result<HashSet<_>, _>>()
                                 })
                                 .ok_or_else(|| AsJsonError::FieldNotFound("body.members"))??,
     
@@ -145,7 +147,7 @@ impl AsJson for ConnectResponse {
                                 .map(|transactions| {
                                     transactions.iter()
                                         .map(Transaction::from_json)
-                                        .collect::<Result<Vec<_>, _>>()
+                                        .collect::<Result<HashSet<_>, _>>()
                                 })
                                 .ok_or_else(|| AsJsonError::FieldNotFound("body.transactions"))??
                         })
@@ -191,18 +193,18 @@ mod tests {
     fn serialize_response() -> Result<(), AsJsonError> {
         let responses = [
             ConnectResponse::Connected {
-                members: vec![
+                members: HashSet::from([
                     get_member(),
                     get_member(),
                     get_member()
-                ],
+                ]),
                 root_block: get_root().0,
                 tail_block: get_chained().1,
-                transactions: vec![
+                transactions: HashSet::from([
                     get_announcement().0,
                     get_message().0,
                     get_message().0
-                ]
+                ])
             },
 
             ConnectResponse::Aborted

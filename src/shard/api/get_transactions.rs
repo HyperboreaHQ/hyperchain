@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value as Json};
 
@@ -11,13 +13,13 @@ use crate::block::{
     Hash
 };
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Request staged transactions.
-/// 
+///
 /// Channel: `hyperchain/<name>/v1/request/get_transactions`.
 pub struct GetTransactionsRequest {
     /// List of known transactions hashes.
-    pub known_transactions: Vec<Hash>
+    pub known_transactions: HashSet<Hash>
 }
 
 impl AsJson for GetTransactionsRequest {
@@ -27,7 +29,7 @@ impl AsJson for GetTransactionsRequest {
 
             "known_transactions": self.known_transactions.iter()
                 .map(Hash::to_base64)
-                .collect::<Vec<_>>()
+                .collect::<HashSet<_>>()
         }))
     }
 
@@ -57,10 +59,10 @@ impl AsJson for GetTransactionsRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 /// Response staged transactions.
-/// 
+///
 /// Channel: `hyperchain/<name>/v1/response/get_transactions`.
 pub struct GetTransactionsResponse {
-    pub transactions: Vec<Transaction>
+    pub transactions: HashSet<Transaction>
 }
 
 impl AsJson for GetTransactionsResponse {
@@ -86,7 +88,7 @@ impl AsJson for GetTransactionsResponse {
                     .map(|transactions| {
                         transactions.iter()
                             .map(Transaction::from_json)
-                            .collect::<Result<Vec<_>, _>>()
+                            .collect::<Result<HashSet<_>, _>>()
                     })
                     .ok_or_else(|| AsJsonError::FieldNotFound("transactions"))??
             }),
