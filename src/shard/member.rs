@@ -7,7 +7,6 @@ use hyperborealib::prelude::*;
 /// Information about the shard member.
 pub struct ShardMember {
     pub client_public: PublicKey,
-    pub server_public: PublicKey,
     pub server_address: String
 }
 
@@ -15,13 +14,8 @@ impl AsJson for ShardMember {
     fn to_json(&self) -> Result<Json, AsJsonError> {
         Ok(json!({
             "format": 1,
-            "client": {
-                "public_key": self.client_public.to_base64()
-            },
-            "server": {
-                "public_key": self.server_public.to_base64(),
-                "address": self.server_address
-            }
+            "client": self.client_public.to_base64(),
+            "server": self.server_address
         }))
     }
 
@@ -32,29 +26,16 @@ impl AsJson for ShardMember {
 
         match format {
             1 => {
-                let Some(client) = json.get("client") else {
-                    return Err(AsJsonError::FieldNotFound("client"));
-                };
-
-                let Some(server) = json.get("server") else {
-                    return Err(AsJsonError::FieldNotFound("server"));
-                };
-
                 Ok(Self {
-                    client_public: client.get("public_key")
+                    client_public: json.get("client")
                         .and_then(Json::as_str)
                         .map(PublicKey::from_base64)
-                        .ok_or_else(|| AsJsonError::FieldNotFound("client.public_key"))??,
+                        .ok_or_else(|| AsJsonError::FieldNotFound("client"))??,
 
-                    server_public: server.get("public_key")
-                        .and_then(Json::as_str)
-                        .map(PublicKey::from_base64)
-                        .ok_or_else(|| AsJsonError::FieldNotFound("server.public_key"))??,
-
-                    server_address: server.get("address")
+                    server_address: json.get("server")
                         .and_then(Json::as_str)
                         .map(String::from)
-                        .ok_or_else(|| AsJsonError::FieldNotFound("server.address"))?
+                        .ok_or_else(|| AsJsonError::FieldNotFound("server"))?
                 })
             }
 
@@ -69,11 +50,9 @@ pub(crate) mod tests {
 
     pub fn get_member() -> ShardMember {
         let client_secret = SecretKey::random();
-        let server_secret = SecretKey::random();
 
         ShardMember {
             client_public: client_secret.public_key(),
-            server_public: server_secret.public_key(),
             server_address: String::from("Hello, World!")
         }
     }
