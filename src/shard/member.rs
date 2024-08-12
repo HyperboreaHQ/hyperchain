@@ -10,6 +10,16 @@ pub struct ShardMember {
     pub server_address: String
 }
 
+impl From<Sender> for ShardMember {
+    #[inline]
+    fn from(value: Sender) -> Self {
+        Self {
+            client_public: value.client.public_key,
+            server_address: value.server.address
+        }
+    }
+}
+
 impl AsJson for ShardMember {
     fn to_json(&self) -> Result<Json, AsJsonError> {
         Ok(json!({
