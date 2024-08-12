@@ -18,18 +18,19 @@ use super::TransactionType;
 
 #[derive(Debug, Clone, PartialEq, Eq, std::hash::Hash, Serialize, Deserialize)]
 pub enum TransactionBody {
+    Raw(Vec<u8>),
+
     Message {
         from: PublicKey,
         to: PublicKey,
         format: MessageEncoding,
-        content: Vec<u8>,
-        sign: Vec<u8>
+        content: String
     },
 
     Announcement {
         from: PublicKey,
-        content: Vec<u8>,
-        sign: Vec<u8>
+        format: MessageEncoding,
+        content: String
     }
 }
 
@@ -40,27 +41,28 @@ impl TransactionBody {
     }
 
     /// Calculate hash of the transaction body.
-    /// 
+    ///
     /// This is a relatively heavy function and
     /// it should not be called often.
     pub fn hash(&self) -> Hash {
         let mut hasher = blake3::Hasher::new();
 
         match self {
-            Self::Message { from, to, format, content, sign } => {
-                // FIXME: technically I only need to hash sign?
+            Self::Raw(bytes) => {
+                hasher.update(bytes);
+            }
 
+            Self::Message { from, to, format, content } => {
                 hasher.update(&from.to_bytes());
                 hasher.update(&to.to_bytes());
                 hasher.update(format.to_string().as_bytes());
-                hasher.update(content);
-                hasher.update(sign);
+                hasher.update(content.as_bytes());
             }
 
-            Self::Announcement { from, content, sign } => {
+            Self::Announcement { from, format, content } => {
                 hasher.update(&from.to_bytes());
-                hasher.update(content);
-                hasher.update(sign);
+                hasher.update(format.to_string().as_bytes());
+                hasher.update(content.as_bytes());
             }
         }
 
@@ -71,22 +73,22 @@ impl TransactionBody {
 impl AsJson for TransactionBody {
     fn to_json(&self) -> Result<Json, AsJsonError> {
         let transaction = match self {
-            Self::Message { from, to, format, content, sign } => {
+            Self::Raw(bytes) => json!(base64::encode(bytes)),
+
+            Self::Message { from, to, format, content } => {
                 json!({
                     "from": from.to_base64(),
                     "to": to.to_base64(),
                     "format": format.to_string(),
-                    "content": base64::encode(content),
-                    "sign": base64::encode(sign)
+                    "content": content
                 })
             }
 
-            Self::Announcement { from, content, sign } => {
+            Self::Announcement { from, format, content } => {
                 json!({
                     "from": from.to_base64(),
-                    // TODO: format?
-                    "content": base64::encode(content),
-                    "sign": base64::encode(sign)
+                    "format": format.to_string(),
+                    "content": content
                 })
             }
         };
@@ -107,6 +109,14 @@ impl AsJson for TransactionBody {
         };
 
         match TransactionType::from_str(transaction_type) {
+            Ok(TransactionType::Raw) => {
+                let bytes = transaction_body.as_str()
+                    .map(base64::decode)
+                    .ok_or_else(|| AsJsonError::FieldValueInvalid("body"))??;
+
+                Ok(Self::Raw(bytes))
+            }
+
             Ok(TransactionType::Message) => {
                 Ok(Self::Message {
                     from: transaction_body.get("from")
@@ -127,13 +137,8 @@ impl AsJson for TransactionBody {
 
                     content: transaction_body.get("content")
                         .and_then(Json::as_str)
-                        .map(base64::decode)
-                        .ok_or_else(|| AsJsonError::FieldValueInvalid("body.content"))??,
-
-                    sign: transaction_body.get("sign")
-                        .and_then(Json::as_str)
-                        .map(base64::decode)
-                        .ok_or_else(|| AsJsonError::FieldValueInvalid("body.sign"))??
+                        .map(String::from)
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("body.content"))?
                 })
             }
 
@@ -144,15 +149,16 @@ impl AsJson for TransactionBody {
                         .map(PublicKey::from_base64)
                         .ok_or_else(|| AsJsonError::FieldValueInvalid("body.from"))??,
 
+                    format: transaction_body.get("format")
+                        .and_then(Json::as_str)
+                        .map(MessageEncoding::from_str)
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("body.format"))?
+                        .map_err(|err| AsJsonError::Other(err.into()))?,
+
                     content: transaction_body.get("content")
                         .and_then(Json::as_str)
-                        .map(base64::decode)
-                        .ok_or_else(|| AsJsonError::FieldValueInvalid("body.content"))??,
-
-                    sign: transaction_body.get("sign")
-                        .and_then(Json::as_str)
-                        .map(base64::decode)
-                        .ok_or_else(|| AsJsonError::FieldValueInvalid("body.sign"))??
+                        .map(String::from)
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("body.content"))?
                 })
             }
 
@@ -171,6 +177,8 @@ pub(crate) mod tests {
     #[test]
     fn serialize() -> Result<(), AsJsonError> {
         let transactions = [
+            TransactionBody::Raw(b"Hello, World!".to_vec()),
+
             get_message().0,
             get_announcement().0
         ];

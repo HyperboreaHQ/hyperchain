@@ -130,7 +130,7 @@ impl Block {
 
     #[inline]
     /// Get hash stored in the block.
-    /// 
+    ///
     /// This method will not validate this hash so
     /// you should treat its value as insecure.
     pub fn get_hash(&self) -> Hash {
@@ -138,7 +138,7 @@ impl Block {
     }
 
     /// Calculate hash of the block.
-    /// 
+    ///
     /// This is a relatively heavy function and
     /// it should not be called often.
     pub fn calculate_hash(&self) -> Hash {
@@ -168,19 +168,19 @@ impl Block {
     }
 
     /// Validate block.
-    /// 
+    ///
     /// This method will:
-    /// 
+    ///
     /// 1. Verify that the block's creation time
     ///    is not higher than the current UTC time.
-    /// 
+    ///
     /// 2. Calculate block hash and compare it
     ///    with stored value.
-    /// 
+    ///
     /// 3. Verify block's signature.
-    /// 
+    ///
     /// 4. Verify each stored transaction.
-    /// 
+    ///
     /// This is not recommended to call this method often.
     pub fn validate(&self) -> Result<BlockValidationResult, BlockValidationError> {
         // Validate block's creation time (+24h just in case)
@@ -333,7 +333,7 @@ impl AsJson for Block {
                     sign: content.get("sign")
                         .and_then(Json::as_str)
                         .map(base64::decode)
-                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.content.sign"))??,
+                        .ok_or_else(|| AsJsonError::FieldValueInvalid("block.content.sign"))??
                 })
             }
 

@@ -1,36 +1,56 @@
 use serde::{Serialize, Deserialize};
 
-use hyperborealib::rest_api::types::MessageEncoding;
 use hyperborealib::crypto::asymmetric::SecretKey;
+use hyperborealib::crypto::compression::CompressionLevel;
+
+use hyperborealib::rest_api::types::{
+    MessageEncoding,
+    MessagesError
+};
 
 use super::*;
+
+#[derive(Debug, thiserror::Error)]
+pub enum MessageTransactionBuildError {
+    #[error(transparent)]
+    Message(#[from] MessagesError),
+
+    #[error("Message's receiver not specified")]
+    NoReceiver
+}
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct MessageTransactionBuilder {
     receiver: Option<PublicKey>,
     format: MessageEncoding,
-    content: Vec<u8>
+    content: Vec<u8>,
+
+    compress_level: CompressionLevel,
+    encryption_salt: Option<Vec<u8>>
 }
 
 impl MessageTransactionBuilder {
     /// Build new `message` transaction body.
-    /// 
+    ///
     /// ```
     /// use hyperborealib::crypto::asymmetric::SecretKey;
     /// use hyperchain::block::MessageTransactionBuilder;
-    /// 
+    ///
     /// let secret = SecretKey::random();
-    /// 
+    ///
     /// let transaction_body = MessageTransactionBuilder::new()
     ///     .with_receiver(secret.public_key())
     ///     .with_content(b"Hello, World!")
-    ///     .sign(&secret);
+    ///     .build(&secret);
     /// ```
     pub fn new() -> Self {
         Self {
             receiver: None,
             format: MessageEncoding::default(),
-            content: vec![]
+            content: vec![],
+
+            compress_level: CompressionLevel::default(),
+            encryption_salt: None
         }
     }
 
@@ -58,18 +78,35 @@ impl MessageTransactionBuilder {
         self
     }
 
+    #[inline]
+    /// Change message's compression level.
+    pub fn with_compression_level(mut self, level: impl Into<CompressionLevel>) -> Self {
+        self.compress_level = level.into();
+
+        self
+    }
+
+    #[inline]
+    /// Change message's encryption salt.
+    pub fn with_encryption_salt(mut self, salt: impl Into<Vec<u8>>) -> Self {
+        self.encryption_salt = Some(salt.into());
+
+        self
+    }
+
     /// Build `message` transaction by signing its content.
-    pub fn sign(mut self, from: &SecretKey) -> Option<TransactionBody> {
-        let receiver = self.receiver.take()?;
+    pub fn build(mut self, from: &SecretKey) -> Result<TransactionBody, MessageTransactionBuildError> {
+        let Some(receiver) = self.receiver.take() else {
+            return Err(MessageTransactionBuildError::NoReceiver);
+        };
 
-        let sign = from.create_signature(&self.content);
+        let secret = from.create_shared_secret(&receiver, self.encryption_salt.as_deref());
 
-        Some(TransactionBody::Message {
+        Ok(TransactionBody::Message {
             from: from.public_key(),
             to: receiver,
             format: self.format,
-            content: self.content,
-            sign
+            content: self.format.forward(&self.content, &secret, self.compress_level)?
         })
     }
 }
@@ -84,7 +121,7 @@ pub(crate) mod tests {
         let transaction = MessageTransactionBuilder::new()
             .with_receiver(secret.public_key())
             .with_content(b"Hello, World!")
-            .sign(&secret)
+            .build(&secret)
             .unwrap();
 
         (transaction, secret)
@@ -100,6 +137,9 @@ pub(crate) mod tests {
 
         assert_eq!(from, secret.public_key());
         assert_eq!(to, secret.public_key());
-        assert_eq!(content, b"Hello, World!");
+
+        // After building transaction's content will be encoded
+        // into base64 by default (check out MessageEncoding struct / "format" value)
+        assert_eq!(base64::decode(content).as_deref(), Ok(b"Hello, World!".as_slice()));
     }
 }
