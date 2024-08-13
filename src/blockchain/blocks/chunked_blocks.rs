@@ -25,11 +25,11 @@ pub enum ChunkedBlocksIndexError {
 }
 
 /// Basic blocks index implementation.
-/// 
+///
 /// This struct will squash several blocks
 /// in a single chunk file and store in
 /// in the given folder.
-/// 
+///
 /// This should be enough for small scale applications.
 pub struct ChunkedBlocksIndex {
     folder: PathBuf,
@@ -39,7 +39,7 @@ pub struct ChunkedBlocksIndex {
 impl ChunkedBlocksIndex {
     /// Create or open blocks index
     /// stored in a given folder.
-    /// 
+    ///
     /// Chunk size specifies amount of blocks
     /// that needs to be squashed into a single file.
     pub async fn open(folder: impl Into<PathBuf>, chunk_size: u64) -> Result<Self, ChunkedBlocksIndexError> {
@@ -87,7 +87,7 @@ impl BlocksIndex for ChunkedBlocksIndex {
 
         let chunk_path = self.folder.join(format!("chunk-{chunk_number}.json"));
 
-        // Create new chunk file if one doesn't exist already        
+        // Create new chunk file if one doesn't exist already
         if !chunk_path.exists() {
             tokio::fs::write(&chunk_path, serde_json::to_string_pretty(&[
                 block.to_json()?
@@ -148,7 +148,7 @@ mod tests {
     async fn index() -> Result<(), ChunkedBlocksIndexError> {
         use hyperborealib::crypto::asymmetric::SecretKey;
 
-        use crate::block::*;
+        use crate::block::prelude::*;
 
         let path = std::env::temp_dir()
             .join(".hyperchain.chunked-blocks-test");

@@ -3,7 +3,7 @@ use hyperborealib::crypto::asymmetric::SecretKey;
 use hyperborealib::time::timestamp;
 use hyperborealib::crypto::utils::safe_random_u64;
 
-use super::*;
+use super::prelude::*;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq)]
 pub struct BlockBuilder {
@@ -19,15 +19,15 @@ pub struct BlockBuilder {
 
 impl BlockBuilder {
     /// Create new block builder with default values.
-    /// 
+    ///
     /// It's recommended to use `chained()` method instead.
-    /// 
+    ///
     /// ```
     /// use hyperborealib::crypto::asymmetric::SecretKey;
     /// use hyperchain::block::BlockBuilder;
-    /// 
+    ///
     /// let secret = SecretKey::random();
-    /// 
+    ///
     /// // Create empty root block
     /// let block = BlockBuilder::new()
     ///     .sign(&secret);
@@ -111,13 +111,13 @@ impl BlockBuilder {
     }
 
     /// Build new root block with default values.
-    /// 
+    ///
     /// ```
     /// use hyperborealib::crypto::asymmetric::SecretKey;
     /// use hyperchain::block::BlockBuilder;
-    /// 
+    ///
     /// let secret = SecretKey::random();
-    /// 
+    ///
     /// let block = BlockBuilder::build_root(&secret);
     /// ```
     pub fn build_root(validator: &SecretKey) -> Block {

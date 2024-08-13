@@ -6,15 +6,12 @@ use hyperborealib::rest_api::{
     AsJsonError
 };
 
-use crate::block::{
-    Block,
-    Transaction,
-    Hash
-};
+use crate::block::prelude::*;
 
 use super::ShardMember;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum ShardMessage {
     /// Ask shard owner to start senging you status updates.
     Subscribe,
@@ -67,7 +64,7 @@ impl AsJson for ShardMessage {
                             return Err(AsJsonError::FieldNotFound("content"));
                         };
 
-                        Ok(Self::Update(ShardUpdate::from_json(&content)?))
+                        Ok(Self::Update(ShardUpdate::from_json(content)?))
                     }
 
                     _ => Err(AsJsonError::FieldValueInvalid("type"))
@@ -80,6 +77,7 @@ impl AsJson for ShardMessage {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(clippy::large_enum_variant)]
 pub enum ShardUpdate {
     /// Announce shard member that you're still online.
     ///
@@ -139,6 +137,13 @@ pub enum ShardUpdate {
     AskTransactions {
         /// List of known transactions' hashes.
         known_transactions: Vec<Hash>
+    }
+}
+
+impl From<ShardUpdate> for ShardMessage {
+    #[inline]
+    fn from(value: ShardUpdate) -> Self {
+        ShardMessage::Update(value)
     }
 }
 

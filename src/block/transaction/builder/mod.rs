@@ -5,13 +5,13 @@ use hyperborealib::crypto::asymmetric::SecretKey;
 use hyperborealib::time::timestamp;
 use hyperborealib::crypto::utils::safe_random_u64;
 
-use super::*;
-
 pub(crate) mod message;
 pub(crate) mod announcement;
 
 pub use message::*;
 pub use announcement::*;
+
+use super::*;
 
 #[derive(Default, Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TransactionBuilder {

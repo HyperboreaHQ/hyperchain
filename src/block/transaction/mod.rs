@@ -8,15 +8,27 @@ use hyperborealib::crypto::Error as CryptographyError;
 
 use hyperborealib::time::timestamp;
 
-use crate::block::Hash;
+use crate::block::hash::Hash;
 
 pub(crate) mod transaction_type;
 pub(crate) mod transaction_body;
-pub(crate) mod builder;
 
 pub use transaction_type::*;
 pub use transaction_body::*;
-pub use builder::*;
+
+pub mod builder;
+
+pub mod prelude {
+    pub use super::{
+        TransactionValidationError,
+        TransactionValidationResult,
+        TransactionType,
+        TransactionBody,
+        Transaction
+    };
+
+    pub use super::builder::*;
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TransactionValidationError {
@@ -98,7 +110,7 @@ impl Transaction {
 
     #[inline]
     /// Get hash stored in the transaction.
-    /// 
+    ///
     /// This method will not validate this hash so
     /// you should treat its value as insecure.
     pub fn get_hash(&self) -> Hash {
@@ -106,7 +118,7 @@ impl Transaction {
     }
 
     /// Calculate hash of the transaction.
-    /// 
+    ///
     /// This is a relatively heavy function and
     /// it should not be called often.
     pub fn calculate_hash(&self) -> Hash {
@@ -120,17 +132,17 @@ impl Transaction {
     }
 
     /// Validate transaction.
-    /// 
+    ///
     /// This method will:
-    /// 
+    ///
     /// 1. Verify that the transaction's creation time
     ///    is not higher than the current UTC time.
-    /// 
+    ///
     /// 2. Calculate transaction hash and compare it
     ///    with stored value.
-    /// 
+    ///
     /// 3. Verify transaction's signature.
-    /// 
+    ///
     /// This is not recommended to call this method often.
     pub fn validate(&self) -> Result<TransactionValidationResult, TransactionValidationError> {
         // Validate transaction's creation time (+24h just in case)

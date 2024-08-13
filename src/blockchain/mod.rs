@@ -3,15 +3,25 @@ use std::sync::Arc;
 use hyperborealib::crypto::asymmetric::PublicKey;
 use hyperborealib::time::timestamp;
 
-use crate::block::*;
+use crate::block::prelude::*;
 
-mod authorities;
-mod blocks;
-mod basic_blockchain;
+pub mod authorities;
+pub mod blocks;
+pub mod basic_blockchain;
 
-pub use authorities::*;
-pub use blocks::*;
-pub use basic_blockchain::*;
+pub mod prelude {
+    pub use super::{
+        BlockchainValidationError,
+        BlockchainValidationResult,
+        Blockchain
+    };
+
+    pub use super::authorities::*;
+    pub use super::blocks::*;
+    pub use super::basic_blockchain::*;
+}
+
+use prelude::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BlockchainValidationError<A, B> {
@@ -92,20 +102,20 @@ pub trait Blockchain {
     fn blocks_index_ref(&self) -> &Self::BlocksIndex;
 
     /// Validate blockchain structure.
-    /// 
+    ///
     /// This method will:
-    /// 
+    ///
     /// 1. Verify that each block's creation timestamp is increasing
     ///    in ascending order.
-    /// 
+    ///
     /// 2. Verify that each block's number is increasing in ascending
     ///    order with a one step.
-    /// 
+    ///
     /// 3. Verify that each block is signed by the blockchain's
     ///    authority.
-    /// 
+    ///
     /// 4. Validate blocks consistency.
-    /// 
+    ///
     /// Since this method is resource heavy it's recommended
     /// to run it with `since_block` property and cache
     /// results for future validations.

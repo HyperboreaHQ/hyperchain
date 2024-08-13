@@ -12,7 +12,7 @@ use hyperborealib::rest_api::{
     AsJsonError
 };
 
-use crate::block::Hash;
+use crate::block::hash::Hash;
 
 use super::TransactionType;
 

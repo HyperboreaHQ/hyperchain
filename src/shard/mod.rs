@@ -1,11 +1,10 @@
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use serde_json::Value as Json;
 
 use hyperborealib::crypto::prelude::*;
 use hyperborealib::http::HttpClient;
-
-use hyperborealib::exports::tokio;
 
 use hyperborealib::rest_api::{
     AsJson,
@@ -23,22 +22,30 @@ use hyperborealib::rest_api::types::{
     MessagesError
 };
 
-use crate::block::BlockValidationError;
-
 mod member;
-mod info;
-mod owned;
-mod remote;
+pub mod message;
+pub mod backend;
 
 pub use member::*;
-pub use info::*;
-pub use owned::*;
-pub use remote::*;
+use message::*;
+use backend::*;
 
-pub mod api;
+pub mod prelude {
+    pub use super::{
+        ShardError,
+        Shard
+    };
+
+    pub use super::member::*;
+    pub use super::message::*;
+    pub use super::backend::*;
+}
+
+use crate::block::BlockValidationError;
+use crate::block::transaction::TransactionValidationError;
 
 #[derive(Debug, thiserror::Error)]
-pub enum ShardError {
+pub enum ShardError<E> {
     #[error(transparent)]
     Middleware(#[from] MiddlewareError),
 
@@ -52,150 +59,321 @@ pub enum ShardError {
     Serialize(#[from] serde_json::Error),
 
     #[error(transparent)]
-    Validation(#[from] BlockValidationError),
+    BlockValidation(#[from] BlockValidationError),
 
-    #[error("Invalid block obtained")]
-    InvalidBlock
+    #[error(transparent)]
+    TransactionValidation(#[from] TransactionValidationError),
+
+    #[error("Shard backend error: {0}")]
+    ShardBackend(E)
 }
 
-pub(crate) async fn send<T: AsJson, F: HttpClient>(
-    middleware: &ConnectedClient<F>,
-    member: &ShardMember,
-    channel: impl std::fmt::Display,
-    message: T
-) -> Result<(), ShardError> {
-    // Prepare message
-    let encoding = MessageEncoding::new(
-        Encoding::Base64,
-        Encryption::None,
-        Compression::Brotli
-    );
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShardOptions {
+    /// Encoding used to transfer hyperborea messages.
+    pub encoding_format: MessageEncoding,
 
-    let message = Message::create(
-        middleware.driver_ref().secret_key(),
-        &member.client_public,
-        serde_json::to_vec(&message.to_json()?)?,
-        encoding,
-        CompressionLevel::Balanced
-    )?;
+    /// Compression level used for hyperborea messages.
+    ///
+    /// Default is balanced.
+    pub compression_level: CompressionLevel,
 
-    // Send message to the member
-    middleware.send(
-        &member.server_address,
-        member.client_public.clone(),
-        channel,
-        message
-    ).await?;
+    /// If true, shard will accept incoming subscriptions
+    /// and re-send status updates from other subscribed members.
+    ///
+    /// Default is true.
+    pub accept_subscriptions: bool,
 
-    Ok(())
+    /// Maximal amount of clients which can subscribe to you.
+    ///
+    /// Default is 32.
+    pub max_subscribers: usize,
+
+    /// Maximal amount of time since last heartbeat message
+    /// of the shard subscriber. If more time passed since last
+    /// heartbeat update, the client will be removed from the
+    /// subscribers list.
+    ///
+    /// Default is 10 minutes.
+    pub max_in_heartbeat_delay: Duration,
+
+    /// Minimal amount of time since last heartbeat message
+    /// we send to other shards we're subscribed to.
+    ///
+    /// Default is 5 minutes.
+    pub min_out_heartbeat_delay: Duration
 }
 
-pub(crate) async fn poll<T: AsJson, F: HttpClient>(
-    middleware: &ConnectedClient<F>,
-    channel: impl AsRef<str>
-) -> Result<T, ShardError> {
-    let mut delay = 0;
-
-    // Await message
-    loop {
-        let messages = middleware.poll(channel.as_ref(), Some(1))
-            .await?.0;
-
-        // If message polled
-        if let Some(message) = messages.first() {
-            // Read the message
-            let message = message.message.read(
-                middleware.driver_ref().secret_key(),
-                &message.sender.client.public_key,
-            )?;
-
-            // Deserialize JSON
-            let message = serde_json::from_slice::<Json>(&message)?;
-
-            // Deserialize the response
-            return Ok(T::from_json(&message)?);
+impl Default for ShardOptions {
+    fn default() -> Self {
+        Self {
+            encoding_format: MessageEncoding::new(
+                Encoding::Base64,
+                Encryption::None,
+                Compression::Brotli
+            ),
+            compression_level: CompressionLevel::Balanced,
+            accept_subscriptions: true,
+            max_subscribers: 32,
+            max_in_heartbeat_delay: Duration::from_secs(10 * 60),
+            min_out_heartbeat_delay: Duration::from_secs(5 * 60)
         }
-
-        // Increase timeout by 1 second
-        delay += 1;
-
-        // Wait some time before polling message again
-        tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
     }
 }
 
-#[derive(Debug)]
-/// Shard builder.
-pub struct Shard<T: HttpClient> {
+#[derive(Debug, Clone)]
+pub struct Shard<T: HttpClient, F: ShardBackend> {
+    /// Hyperborea client middleware used to send and poll messages.
     middleware: ConnectedClient<T>,
-    name: String
+
+    /// Name of the shard.
+    name: String,
+
+    /// Backend of the shard.
+    backend: F,
+
+    /// List of shard members to which we are subscribed.
+    subscriptions: HashMap<ShardMember, Instant>,
+
+    /// List of shard members which are subscribed to us.
+    subscribers: HashMap<ShardMember, Instant>,
+
+    /// Shard options.
+    options: ShardOptions
 }
 
-impl<T: HttpClient> Shard<T> {
+impl<T: HttpClient, F: ShardBackend> Shard<T, F> {
     #[inline]
-    /// Open shard connection builder with given client middleware.
-    pub fn from_middleware(middleware: ConnectedClient<T>) -> Self {
+    /// Create new shard with given connected hyperborea middleware.
+    pub fn new(middleware: ConnectedClient<T>, name: impl ToString, backend: F) -> Self {
         Self {
             middleware,
-            name: String::from("default")
+            name: name.to_string(),
+            backend,
+            subscriptions: HashMap::new(),
+            subscribers: HashMap::new(),
+            options: ShardOptions::default()
         }
     }
 
     #[inline]
-    /// Change shard's name.
-    pub fn with_name(mut self, name: impl ToString) -> Self {
-        self.name = name.to_string();
+    /// Change shard options.
+    pub fn with_options(&mut self, options: ShardOptions) -> &mut Self {
+        self.options = options;
 
         self
     }
 
-    /// Try connecting to the remote shard.
-    pub async fn connect(self, owner: ShardMember) -> Result<Option<RemoteShard<T>>, ShardError> {
-        send(
-            &self.middleware,
-            &owner,
-            format!("hyperchain/{}/v1/request/connect", &self.name),
-            api::ConnectRequest
+    async fn send(&self, member: &ShardMember, message: impl Into<ShardMessage>) -> Result<(), ShardError<F::Error>> {
+        let message: ShardMessage = message.into();
+
+        let message = Message::create(
+            self.middleware.driver_ref().secret_key(),
+            &member.client_public,
+            serde_json::to_vec(&message.to_json()?)?,
+            self.options.encoding_format,
+            self.options.compression_level
+        )?;
+
+        // Send message to the member.
+        self.middleware.send(
+            &member.server_address,
+            member.client_public.clone(),
+            format!("hyperchain/v1/{}", &self.name),
+            message
         ).await?;
 
-        let response = poll(
-            &self.middleware,
-            format!("hyperchain/{}/v1/response/connect", &self.name)
-        ).await?;
+        Ok(())
+    }
 
-        match response {
-            api::ConnectResponse::Connected {
-                members,
-                root_block,
-                tail_block,
-                transactions
-            } => {
-                Ok(Some(RemoteShard {
-                    middleware: self.middleware,
+    /// Send shard subscription message.
+    pub async fn subscribe(&mut self, shard: &ShardMember) -> Result<(), ShardError<F::Error>> {
+        self.send(shard, ShardMessage::Subscribe).await?;
 
-                    info: ShardInfo {
-                        name: self.name,
-                        owner,
-                        members,
-                    },
+        self.subscriptions.insert(shard.clone(), Instant::now());
 
-                    root_block,
-                    tail_block,
+        Ok(())
+    }
 
-                    staged_transactions: transactions
-                        .iter()
-                        .map(|transaction| transaction.get_hash())
-                        .collect(),
+    /// Send shard unsubscription message.
+    pub async fn unsubscribe(&mut self, shard: &ShardMember) -> Result<(), ShardError<F::Error>> {
+        self.send(shard, ShardMessage::Subscribe).await?;
 
-                    transactions_handler: None,
-                    block_handler: None,
+        self.subscriptions.remove(shard);
 
-                    transactions_pool: transactions,
-                    blocks_pool: HashSet::new()
-                }))
+        Ok(())
+    }
+
+    /// Poll shard updates and process them.
+    pub async fn update(&mut self) -> Result<(), ShardError<F::Error>> {
+        // Handle messages.
+        let messages = self.middleware.poll(format!("hyperchain/v1/{}", &self.name), None).await?.0;
+
+        for message in messages {
+            let update = message.message.read(
+                self.middleware.driver_ref().secret_key(),
+                &message.sender.client.public_key
+            )?;
+
+            // Try to deserialize the message
+            if let Ok(update) = serde_json::from_slice::<Json>(&update) {
+                // Try to parse the message from json object
+                if let Ok(update) = ShardMessage::from_json(&update) {
+                    // TODO: handle errors nicer
+                    match update {
+                        ShardMessage::Subscribe => {
+                            if self.options.accept_subscriptions {
+                                self.subscribers.insert(ShardMember::from(message.sender), Instant::now());
+                            }
+                        }
+
+                        ShardMessage::Unsubscribe => {
+                            self.subscribers.remove(&ShardMember::from(message.sender));
+                        }
+
+                        ShardMessage::Update(update) => {
+                            match update {
+                                // Handle heartbeat message.
+                                ShardUpdate::Heartbeat => {
+                                    let member = ShardMember::from(message.sender);
+
+                                    if self.subscribers.contains_key(&member) {
+                                        self.subscribers.insert(member, Instant::now());
+                                    }
+                                }
+
+                                // Handle shard update message.
+                                ShardUpdate::Status { root_block, tail_block, .. } => {
+                                    // Handle root block.
+                                    if let Some(root) = root_block {
+                                        if root.validate()?.is_valid() {
+                                            self.backend.handle_block(root).await
+                                                .map_err(ShardError::ShardBackend)?;
+                                        }
+                                    }
+
+                                    // Handle tail block.
+                                    if let Some(tail) = tail_block {
+                                        if tail.validate()?.is_valid() {
+                                            self.backend.handle_block(tail).await
+                                                .map_err(ShardError::ShardBackend)?;
+                                        }
+                                    }
+                                }
+
+                                // Handle blocks announcement.
+                                ShardUpdate::AnnounceBlocks { mut blocks } => {
+                                    // Handle blocks.
+                                    let mut valid_blocks = Vec::with_capacity(blocks.len());
+
+                                    for block in blocks.drain(..) {
+                                        if block.validate()?.is_valid() {
+                                            valid_blocks.push(block.clone());
+
+                                            self.backend.handle_block(block).await
+                                                .map_err(ShardError::ShardBackend)?;
+                                        }
+                                    }
+
+                                    // Re-send valid blocks to subscribers.
+                                    let message = ShardMessage::Update(ShardUpdate::AnnounceBlocks {
+                                        blocks: valid_blocks
+                                    });
+
+                                    for (member, last_update) in self.subscribers.clone() {
+                                        if last_update.elapsed() > self.options.max_in_heartbeat_delay {
+                                            self.subscribers.remove(&member);
+                                        }
+
+                                        // Send the announced block to the subscriber
+                                        // and remove it if sending has failed.
+                                        else if let Err(_err) = self.send(&member, message.clone()).await {
+                                            self.subscribers.remove(&member);
+                                        }
+                                    }
+                                }
+
+                                // Handle transactions announcement.
+                                ShardUpdate::AnnounceTransactions { mut transactions } => {
+                                    // Handle transactions.
+                                    let mut valid_transactions = Vec::with_capacity(transactions.len());
+
+                                    for transaction in transactions.drain(..) {
+                                        if transaction.validate()?.is_valid() {
+                                            valid_transactions.push(transaction.clone());
+
+                                            self.backend.handle_transaction(transaction).await
+                                                .map_err(ShardError::ShardBackend)?;
+                                        }
+                                    }
+
+                                    // Re-send valid transactions to subscribers.
+                                    let message = ShardMessage::Update(ShardUpdate::AnnounceTransactions {
+                                        transactions: valid_transactions
+                                    });
+
+                                    for (member, last_update) in self.subscribers.clone() {
+                                        if last_update.elapsed() > self.options.max_in_heartbeat_delay {
+                                            self.subscribers.remove(&member);
+                                        }
+
+                                        // Send the announced transaction to the subscriber
+                                        // and remove it if sending has failed.
+                                        else if let Err(_err) = self.send(&member, message.clone()).await {
+                                            self.subscribers.remove(&member);
+                                        }
+                                    }
+                                }
+
+                                // Handle ask blocks request.
+                                ShardUpdate::AskBlocks { from_number, max_amount } => {
+                                    let blocks = self.backend.get_blocks(from_number, max_amount).await
+                                        .map_err(ShardError::ShardBackend)?;
+
+                                    // Send the response and ignore if it has failed.
+                                    let _ = self.send(
+                                        &ShardMember::from(message.sender),
+                                        ShardUpdate::AnnounceBlocks {
+                                            blocks
+                                        }
+                                    ).await;
+                                }
+
+                                // Handle ask transactions request.
+                                ShardUpdate::AskTransactions { known_transactions } => {
+                                    let transactions = self.backend.get_transactions(known_transactions).await
+                                        .map_err(ShardError::ShardBackend)?;
+
+                                    // Send the response and ignore if it has failed.
+                                    let _ = self.send(
+                                        &ShardMember::from(message.sender),
+                                        ShardUpdate::AnnounceTransactions {
+                                            transactions
+                                        }
+                                    ).await;
+                                }
+                            }
+                        }
+                    }
+                }
             }
-
-            api::ConnectResponse::Aborted => Ok(None)
         }
+
+        // Send heartbeats.
+        for (member, last_update) in self.subscriptions.clone() {
+            if last_update.elapsed() > self.options.min_out_heartbeat_delay {
+                // Update last heartbeat timestamp if it succeeded.
+                if self.send(&member, ShardUpdate::Heartbeat).await.is_ok() {
+                    self.subscriptions.insert(member, Instant::now());
+                }
+
+                // Otherwise unsubscribe from the client.
+                else {
+                    let _ = self.unsubscribe(&member).await;
+                }
+            }
+        }
+
+        Ok(())
     }
 }

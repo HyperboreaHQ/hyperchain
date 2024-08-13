@@ -12,15 +12,26 @@ use hyperborealib::rest_api::{
     AsJsonError
 };
 
-pub(crate) mod hash;
-pub(crate) mod transaction;
-pub(crate) mod minter;
-pub(crate) mod builder;
+pub mod hash;
+pub mod transaction;
+pub mod minter;
+pub mod builder;
 
-pub use hash::*;
-pub use transaction::*;
-pub use minter::*;
-pub use builder::*;
+pub mod prelude {
+    pub use super::{
+        BlockValidationError,
+        BlockValidationResult,
+        Block
+    };
+
+    pub use super::hash::*;
+    pub use super::minter::*;
+    pub use super::builder::*;
+
+    pub use super::transaction::prelude::*;
+}
+
+use prelude::*;
 
 #[derive(Debug, thiserror::Error)]
 pub enum BlockValidationError {
@@ -126,6 +137,12 @@ impl Block {
     /// Digital signature of the block's hash.
     pub fn sign(&self) -> &[u8] {
         &self.sign
+    }
+
+    #[inline]
+    /// Check if the block is root (doesn't have an ancestor).
+    pub fn is_root(&self) -> bool {
+        self.previous_block.is_none()
     }
 
     #[inline]

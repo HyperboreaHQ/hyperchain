@@ -14,20 +14,20 @@ pub trait BlocksIndex {
     async fn get_block(&self, number: u64) -> Result<Option<Block>, Self::Error>;
 
     /// Try to push a new block to the index.
-    /// 
+    ///
     /// This method should verify the block before adding it
     /// and return `false` if it wasn't added. Otherwise `true`.
     async fn push_block(&self, block: Block) -> Result<bool, Self::Error>;
 
     /// Try to get a block next to the given one.
-    /// 
+    ///
     /// This method should have the fastest next block lookup implementation.
     async fn get_next_block(&self, block: &Block) -> Result<Option<Block>, Self::Error> {
         self.get_block(block.number + 1).await
     }
 
     /// Try to get the root block.
-    /// 
+    ///
     /// This method must return the same value
     /// as `get_block_by_number(0)`.
     async fn get_root_block(&self) -> Result<Option<Block>, Self::Error> {
@@ -55,10 +55,10 @@ pub trait BlocksIndex {
     }
 
     /// Check if the blocks index is truncated.
-    /// 
+    ///
     /// Truncated blocks index's root block references some
     /// another block which is not stored in this index.
-    /// 
+    ///
     /// Truncated indexes can't be fully validated.
     async fn is_truncated(&self) -> Result<bool, Self::Error> {
         match self.get_root_block().await? {

@@ -8,7 +8,7 @@ use hyperborealib::rest_api::{
     AsJsonError
 };
 
-use super::Hash;
+use super::hash::Hash;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BlockMinter {
@@ -33,7 +33,7 @@ impl BlockMinter {
 
     #[inline]
     /// XOR mask of the block minter's balance.
-    /// 
+    ///
     /// This value is calculated as `previous_mask ^ minted_block`.
     pub fn balance_mask(&self) -> Hash {
         self.balance_mask
