@@ -23,8 +23,8 @@ impl AnnouncementTransactionBuilder {
     /// Build new `announcement` transaction body.
     ///
     /// ```
-    /// use hyperborealib::crypto::asymmetric::SecretKey;
-    /// use hyperchain::block::AnnouncementTransactionBuilder;
+    /// use hyperborealib::prelude::*;
+    /// use hyperchain::prelude::*;
     ///
     /// let secret = SecretKey::random();
     ///

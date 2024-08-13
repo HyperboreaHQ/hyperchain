@@ -33,8 +33,8 @@ impl MessageTransactionBuilder {
     /// Build new `message` transaction body.
     ///
     /// ```
-    /// use hyperborealib::crypto::asymmetric::SecretKey;
-    /// use hyperchain::block::MessageTransactionBuilder;
+    /// use hyperborealib::prelude::*;
+    /// use hyperchain::prelude::*;
     ///
     /// let secret = SecretKey::random();
     ///

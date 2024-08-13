@@ -23,8 +23,8 @@ impl BlockBuilder {
     /// It's recommended to use `chained()` method instead.
     ///
     /// ```
-    /// use hyperborealib::crypto::asymmetric::SecretKey;
-    /// use hyperchain::block::BlockBuilder;
+    /// use hyperborealib::prelude::*;
+    /// use hyperchain::prelude::*;
     ///
     /// let secret = SecretKey::random();
     ///
@@ -113,8 +113,8 @@ impl BlockBuilder {
     /// Build new root block with default values.
     ///
     /// ```
-    /// use hyperborealib::crypto::asymmetric::SecretKey;
-    /// use hyperchain::block::BlockBuilder;
+    /// use hyperborealib::prelude::*;
+    /// use hyperchain::prelude::*;
     ///
     /// let secret = SecretKey::random();
     ///
