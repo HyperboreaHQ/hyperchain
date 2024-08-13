@@ -2,10 +2,21 @@ use std::sync::Arc;
 
 use super::*;
 
+#[derive(Clone)]
 /// Basic blockchain implementation.
 pub struct BasicBlockchain<A, B> {
     authorities_index: Arc<A>,
     blocks_index: Arc<B>
+}
+
+impl<A, B> BasicBlockchain<A, B> {
+    #[inline]
+    pub fn new(authorities_index: A, blocks_index: B) -> Self {
+        Self {
+            authorities_index: Arc::new(authorities_index),
+            blocks_index: Arc::new(blocks_index)
+        }
+    }
 }
 
 impl<A, B> Blockchain for BasicBlockchain<A, B>
