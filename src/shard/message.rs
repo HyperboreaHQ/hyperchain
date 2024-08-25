@@ -13,11 +13,16 @@ use super::ShardMember;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum ShardMessage {
-    /// Ask shard owner to start senging you status updates.
+    /// Ask shard owner to start sending you status updates.
     Subscribe,
 
     /// Ask shard owner to stop sending you status updates.
     Unsubscribe,
+
+    /// Note shard owner that you're still alive.
+    ///
+    /// Should be sent every once and a while to keep the connection.
+    Heartbeat,
 
     /// Shard status update.
     Update(ShardUpdate)
@@ -36,10 +41,15 @@ impl AsJson for ShardMessage {
                 "type": "unsubscribe"
             })),
 
+            Self::Heartbeat => Ok(json!({
+                "format": 1,
+                "type": "heartbeat"
+            })),
+
             Self::Update(update) => Ok(json!({
                 "format": 1,
                 "type": "update",
-                "content": update.to_json()?
+                "body": update.to_json()?
             }))
         }
     }
@@ -58,13 +68,14 @@ impl AsJson for ShardMessage {
                 match message_type {
                     "subscribe"   => Ok(Self::Subscribe),
                     "unsubscribe" => Ok(Self::Unsubscribe),
+                    "heartbeat"   => Ok(Self::Heartbeat),
 
                     "update" => {
-                        let Some(content) = json.get("content") else {
-                            return Err(AsJsonError::FieldNotFound("content"));
+                        let Some(body) = json.get("body") else {
+                            return Err(AsJsonError::FieldNotFound("body"));
                         };
 
-                        Ok(Self::Update(ShardUpdate::from_json(content)?))
+                        Ok(Self::Update(ShardUpdate::from_json(body)?))
                     }
 
                     _ => Err(AsJsonError::FieldValueInvalid("type"))
@@ -79,13 +90,6 @@ impl AsJson for ShardMessage {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum ShardUpdate {
-    /// Announce shard member that you're still online.
-    ///
-    /// This update message should be sent once in a while
-    /// so the shard's owner can know you're still reading
-    /// updates. Otherwise it can stop sending you them.
-    Heartbeat,
-
     /// Information about the shard's status.
     ///
     /// This update message should be sent once in a while
@@ -97,13 +101,16 @@ pub enum ShardUpdate {
         /// Tail block of the blockchain.
         tail_block: Option<Block>,
 
-        /// Announced list of clients
-        /// subscribed to this shard.
-        subscribers: Vec<ShardMember>,
+        /// List of known staged transactions' hashes.
+        staged_transactions: Vec<Hash>,
 
         /// Announced list of clients to which
         /// the shard's owner is subscribed.
-        subscribed: Vec<ShardMember>
+        subscriptions: Vec<ShardMember>,
+
+        /// Announced list of clients
+        /// subscribed to this shard.
+        subscribers: Vec<ShardMember>
     },
 
     /// Announce blockchain's blocks.
@@ -150,16 +157,12 @@ impl From<ShardUpdate> for ShardMessage {
 impl AsJson for ShardUpdate {
     fn to_json(&self) -> Result<Json, AsJsonError> {
         match self {
-            Self::Heartbeat => Ok(json!({
-                "format": 1,
-                "type": "heartbeat"
-            })),
-
             Self::Status {
                 root_block,
                 tail_block,
-                subscribers,
-                subscribed
+                staged_transactions,
+                subscriptions,
+                subscribers
             } => {
                 Ok(json!({
                     "format": 1,
@@ -175,11 +178,15 @@ impl AsJson for ShardUpdate {
                                 .transpose()?
                         },
 
-                        "subscribers": subscribers.iter()
+                        "transactions": staged_transactions.iter()
+                            .map(Hash::to_base64)
+                            .collect::<Vec<_>>(),
+
+                        "subscriptions": subscriptions.iter()
                             .map(ShardMember::to_json)
                             .collect::<Result<Vec<_>, _>>()?,
 
-                        "subscribed": subscribed.iter()
+                        "subscribers": subscribers.iter()
                             .map(ShardMember::to_json)
                             .collect::<Result<Vec<_>, _>>()?
                     }
@@ -233,8 +240,6 @@ impl AsJson for ShardUpdate {
                 };
 
                 match update_type {
-                    "heartbeat" => Ok(Self::Heartbeat),
-
                     "status" => {
                         let Some(body) = json.get("body") else {
                             return Err(AsJsonError::FieldNotFound("body"));
@@ -267,6 +272,26 @@ impl AsJson for ShardUpdate {
                                 .ok_or_else(|| AsJsonError::FieldNotFound("body.blocks.tail"))?
                                 .transpose()?,
 
+                            staged_transactions: body.get("transactions")
+                                .and_then(Json::as_array)
+                                .map(|transactions| {
+                                    transactions.iter()
+                                        .flat_map(Json::as_str)
+                                        .map(Hash::from_base64)
+                                        .collect::<Result<Vec<_>, _>>()
+                                })
+                                .ok_or_else(|| AsJsonError::FieldNotFound("body.transactions"))?
+                                .map_err(|err| AsJsonError::Other(err.into()))?,
+
+                            subscriptions: body.get("subscriptions")
+                                .and_then(Json::as_array)
+                                .map(|subscribers| {
+                                    subscribers.iter()
+                                        .map(ShardMember::from_json)
+                                        .collect::<Result<Vec<_>, _>>()
+                                })
+                                .ok_or_else(|| AsJsonError::FieldNotFound("body.subscriptions"))??,
+
                             subscribers: body.get("subscribers")
                                 .and_then(Json::as_array)
                                 .map(|subscribers| {
@@ -274,16 +299,7 @@ impl AsJson for ShardUpdate {
                                         .map(ShardMember::from_json)
                                         .collect::<Result<Vec<_>, _>>()
                                 })
-                                .ok_or_else(|| AsJsonError::FieldNotFound("body.subscribers"))??,
-
-                            subscribed: body.get("subscribed")
-                                .and_then(Json::as_array)
-                                .map(|subscribers| {
-                                    subscribers.iter()
-                                        .map(ShardMember::from_json)
-                                        .collect::<Result<Vec<_>, _>>()
-                                })
-                                .ok_or_else(|| AsJsonError::FieldNotFound("body.subscribed"))??
+                                .ok_or_else(|| AsJsonError::FieldNotFound("body.subscribers"))??
                         })
                     }
 
@@ -370,23 +386,26 @@ pub(crate) mod tests {
         let (root, tail, _) = get_chained();
 
         vec![
-            ShardUpdate::Heartbeat,
-
             ShardUpdate::Status {
                 root_block: None,
                 tail_block: None,
-                subscribers: vec![],
-                subscribed: vec![]
+                staged_transactions: vec![],
+                subscriptions: vec![],
+                subscribers: vec![]
             },
 
             ShardUpdate::Status {
                 root_block: Some(root.clone()),
                 tail_block: Some(tail.clone()),
-                subscribers: vec![
-                    get_member(),
+                staged_transactions: vec![
+                    get_message().0.get_hash(),
+                    get_announcement().0.get_hash()
+                ],
+                subscriptions: vec![
                     get_member()
                 ],
-                subscribed: vec![
+                subscribers: vec![
+                    get_member(),
                     get_member()
                 ]
             },

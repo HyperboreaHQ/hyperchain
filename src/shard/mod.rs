@@ -187,10 +187,10 @@ impl<T: HttpClient, F: ShardBackend> Shard<T, F> {
     }
 
     /// Send shard subscription message.
-    pub async fn subscribe(&mut self, shard: &ShardMember) -> Result<(), ShardError<F::Error>> {
-        self.send(shard, ShardMessage::Subscribe).await?;
+    pub async fn subscribe(&mut self, shard: ShardMember) -> Result<(), ShardError<F::Error>> {
+        self.send(&shard, ShardMessage::Subscribe).await?;
 
-        self.subscriptions.insert(shard.clone(), Instant::now());
+        self.subscriptions.insert(shard, Instant::now());
 
         Ok(())
     }
@@ -200,6 +200,15 @@ impl<T: HttpClient, F: ShardBackend> Shard<T, F> {
         self.send(shard, ShardMessage::Subscribe).await?;
 
         self.subscriptions.remove(shard);
+
+        Ok(())
+    }
+
+    /// Send shard heartbeat message.
+    pub async fn heartbeat(&mut self, shard: ShardMember) -> Result<(), ShardError<F::Error>> {
+        self.send(&shard, ShardMessage::Heartbeat).await?;
+
+        self.subscriptions.insert(shard, Instant::now());
 
         Ok(())
     }
@@ -231,17 +240,16 @@ impl<T: HttpClient, F: ShardBackend> Shard<T, F> {
                             self.subscribers.remove(&ShardMember::from(message.sender));
                         }
 
+                        ShardMessage::Heartbeat => {
+                            let member = ShardMember::from(message.sender);
+
+                            if self.subscribers.contains_key(&member) {
+                                self.subscribers.insert(member, Instant::now());
+                            }
+                        }
+
                         ShardMessage::Update(update) => {
                             match update {
-                                // Handle heartbeat message.
-                                ShardUpdate::Heartbeat => {
-                                    let member = ShardMember::from(message.sender);
-
-                                    if self.subscribers.contains_key(&member) {
-                                        self.subscribers.insert(member, Instant::now());
-                                    }
-                                }
-
                                 // Handle shard update message.
                                 ShardUpdate::Status { root_block, tail_block, .. } => {
                                     // Handle root block.
@@ -362,13 +370,8 @@ impl<T: HttpClient, F: ShardBackend> Shard<T, F> {
         // Send heartbeats.
         for (member, last_update) in self.subscriptions.clone() {
             if last_update.elapsed() > self.options.min_out_heartbeat_delay {
-                // Update last heartbeat timestamp if it succeeded.
-                if self.send(&member, ShardUpdate::Heartbeat).await.is_ok() {
-                    self.subscriptions.insert(member, Instant::now());
-                }
-
-                // Otherwise unsubscribe from the client.
-                else {
+                // Unsubscribe from the client if heartbeat has failed.
+                if self.heartbeat(member.clone()).await.is_err() {
                     let _ = self.unsubscribe(&member).await;
                 }
             }
