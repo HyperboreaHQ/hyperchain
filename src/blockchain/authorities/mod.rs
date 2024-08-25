@@ -7,7 +7,7 @@ mod authorities_file;
 pub use authorities_file::*;
 
 #[async_trait::async_trait]
-/// Trait implementing this struct should hold information
+/// This trait implementation should hold information
 /// about the blockchain's authorities (blocks validators).
 pub trait AuthoritiesIndex {
     type Error: std::error::Error + Send + Sync;

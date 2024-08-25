@@ -7,6 +7,7 @@ use crate::block::prelude::*;
 
 pub mod authorities;
 pub mod blocks;
+pub mod transactions;
 pub mod basic_blockchain;
 
 pub mod prelude {
@@ -18,6 +19,7 @@ pub mod prelude {
 
     pub use super::authorities::*;
     pub use super::blocks::*;
+    pub use super::transactions::*;
     pub use super::basic_blockchain::*;
 }
 
@@ -94,12 +96,15 @@ pub enum BlockchainValidationResult {
 pub trait Blockchain {
     type AuthoritiesIndex: AuthoritiesIndex + Send + Sync;
     type BlocksIndex: BlocksIndex + Send + Sync;
+    type TransactionsIndex: TransactionsIndex<BlocksIndex = Self::BlocksIndex> + Send + Sync;
 
     fn authorities_index(&self) -> Arc<Self::AuthoritiesIndex>;
     fn blocks_index(&self) -> Arc<Self::BlocksIndex>;
+    fn transactions_index(&self) -> Arc<Self::TransactionsIndex>;
 
     fn authorities_index_ref(&self) -> &Self::AuthoritiesIndex;
     fn blocks_index_ref(&self) -> &Self::BlocksIndex;
+    fn transactions_index_ref(&self) -> &Self::TransactionsIndex;
 
     /// Validate blockchain structure.
     ///

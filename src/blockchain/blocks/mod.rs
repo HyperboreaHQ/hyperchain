@@ -5,7 +5,7 @@ mod chunked_blocks;
 pub use chunked_blocks::*;
 
 #[async_trait::async_trait]
-/// Trait implementing this struct should manage information
+/// This trait implementation should manage information
 /// about the blocks.
 pub trait BlocksIndex {
     type Error: std::error::Error + Send + Sync;
