@@ -95,8 +95,8 @@ pub enum ShardUpdate {
     /// This update message should be sent once in a while
     /// to synchronize the shard's state between its subscribers.
     Status {
-        /// Root block of the blockchain.
-        root_block: Option<Block>,
+        /// Head block of the blockchain.
+        head_block: Option<Block>,
 
         /// Tail block of the blockchain.
         tail_block: Option<Block>,
@@ -125,25 +125,6 @@ pub enum ShardUpdate {
     /// This is not necessary a new transactions.
     AnnounceTransactions {
         transactions: Vec<Transaction>
-    },
-
-    /// Ask client to send you blockchain's blocks.
-    AskBlocks {
-        /// Starting block's number that you want to receive.
-        from_number: u64,
-
-        /// Maximum amount of blocks you want to receive.
-        ///
-        /// If `None`, then this value is chosen by the shard owner.
-        /// `Some` value is only limiting the upper value. Actual amount
-        /// of sent blocks is determined by the shard's owner.
-        max_amount: Option<u64>
-    },
-
-    /// Ask client to send you staged transactions.
-    AskTransactions {
-        /// List of known transactions' hashes.
-        known_transactions: Vec<Hash>
     }
 }
 
@@ -158,7 +139,7 @@ impl AsJson for ShardUpdate {
     fn to_json(&self) -> Result<Json, AsJsonError> {
         match self {
             Self::Status {
-                root_block,
+                head_block,
                 tail_block,
                 staged_transactions,
                 subscriptions,
@@ -169,7 +150,7 @@ impl AsJson for ShardUpdate {
                     "type": "status",
                     "body": {
                         "blocks": {
-                            "root": root_block.as_ref()
+                            "head": head_block.as_ref()
                                 .map(Block::to_json)
                                 .transpose()?,
 
@@ -207,23 +188,6 @@ impl AsJson for ShardUpdate {
                 "transactions": transactions.iter()
                     .map(Transaction::to_json)
                     .collect::<Result<Vec<_>, _>>()?
-            })),
-
-            Self::AskBlocks { from_number, max_amount } => Ok(json!({
-                "format": 1,
-                "type": "ask_blocks",
-                "body": {
-                    "from_number": from_number,
-                    "max_amount": max_amount
-                }
-            })),
-
-            Self::AskTransactions { known_transactions } => Ok(json!({
-                "format": 1,
-                "type": "ask_transactions",
-                "known": known_transactions.iter()
-                    .map(Hash::to_base64)
-                    .collect::<Vec<_>>()
             }))
         }
     }
@@ -250,7 +214,7 @@ impl AsJson for ShardUpdate {
                         };
 
                         Ok(Self::Status {
-                            root_block: blocks.get("root")
+                            head_block: blocks.get("head")
                                 .map(|block| {
                                     if block.is_null() {
                                         None
@@ -258,7 +222,7 @@ impl AsJson for ShardUpdate {
                                         Some(Block::from_json(block))
                                     }
                                 })
-                                .ok_or_else(|| AsJsonError::FieldNotFound("body.blocks.root"))?
+                                .ok_or_else(|| AsJsonError::FieldNotFound("body.blocks.head"))?
                                 .transpose()?,
 
                             tail_block: blocks.get("tail")
@@ -325,42 +289,6 @@ impl AsJson for ShardUpdate {
                             .ok_or_else(|| AsJsonError::FieldNotFound("transactions"))??
                     }),
 
-                    "ask_blocks" => {
-                        let Some(body) = json.get("body") else {
-                            return Err(AsJsonError::FieldNotFound("body"));
-                        };
-
-                        Ok(Self::AskBlocks {
-                            from_number: body.get("from_number")
-                                .and_then(Json::as_u64)
-                                .ok_or_else(|| AsJsonError::FieldNotFound("body.from_number"))?,
-
-                            max_amount: body.get("max_amount")
-                                .and_then(|max_amount| {
-                                    if max_amount.is_null() {
-                                        Some(None)
-                                    } else {
-                                        max_amount.as_u64()
-                                            .map(Some)
-                                    }
-                                })
-                                .ok_or_else(|| AsJsonError::FieldNotFound("body.max_amount"))?
-                        })
-                    }
-
-                    "ask_transactions" => Ok(Self::AskTransactions {
-                        known_transactions: json.get("known")
-                            .and_then(Json::as_array)
-                            .map(|known| {
-                                known.iter()
-                                    .flat_map(Json::as_str)
-                                    .map(Hash::from_base64)
-                                    .collect::<Result<Vec<_>, _>>()
-                            })
-                            .ok_or_else(|| AsJsonError::FieldNotFound("known"))?
-                            .map_err(|err| AsJsonError::Other(err.into()))?
-                    }),
-
                     _ => Err(AsJsonError::FieldValueInvalid("type"))
                 }
             }
@@ -387,7 +315,7 @@ pub(crate) mod tests {
 
         vec![
             ShardUpdate::Status {
-                root_block: None,
+                head_block: None,
                 tail_block: None,
                 staged_transactions: vec![],
                 subscriptions: vec![],
@@ -395,7 +323,7 @@ pub(crate) mod tests {
             },
 
             ShardUpdate::Status {
-                root_block: Some(root.clone()),
+                head_block: Some(root.clone()),
                 tail_block: Some(tail.clone()),
                 staged_transactions: vec![
                     get_message().0.get_hash(),
@@ -421,23 +349,6 @@ pub(crate) mod tests {
                 transactions: vec![
                     get_message().0,
                     get_announcement().0
-                ]
-            },
-
-            ShardUpdate::AskBlocks {
-                from_number: 10,
-                max_amount: None
-            },
-
-            ShardUpdate::AskBlocks {
-                from_number: 10,
-                max_amount: Some(10)
-            },
-
-            ShardUpdate::AskTransactions {
-                known_transactions: vec![
-                    Hash::MIN,
-                    Hash::MAX
                 ]
             }
         ]

@@ -187,7 +187,7 @@ where T: BlocksIndex + Send + Sync
         } else {
             empty_index = true;
 
-            index.get_root_block().await
+            index.get_head_block().await
                 .map_err(TransactionsFileError::BlocksIndex)?
         };
 
@@ -345,14 +345,14 @@ mod tests {
         assert!(transactions_index.get_transaction(&transaction_c.get_hash()).await?.is_none());
 
         // Push A
-        blocks_index.push_block(block_a).await.map_err(TransactionsFileError::BlocksIndex)?;
+        blocks_index.insert_block(block_a).await.map_err(TransactionsFileError::BlocksIndex)?;
 
         assert!(!transactions_index.has_transaction(&transaction_a.get_hash()).await?);
         assert!(!transactions_index.has_transaction(&transaction_b.get_hash()).await?);
         assert!(!transactions_index.has_transaction(&transaction_c.get_hash()).await?);
 
         // Push B
-        blocks_index.push_block(block_b.clone()).await.map_err(TransactionsFileError::BlocksIndex)?;
+        blocks_index.insert_block(block_b.clone()).await.map_err(TransactionsFileError::BlocksIndex)?;
 
         assert!(transactions_index.has_transaction(&transaction_a.get_hash()).await?);
         assert!(!transactions_index.has_transaction(&transaction_b.get_hash()).await?);
@@ -364,14 +364,14 @@ mod tests {
         )));
 
         // Push C
-        blocks_index.push_block(block_c).await.map_err(TransactionsFileError::BlocksIndex)?;
+        blocks_index.insert_block(block_c).await.map_err(TransactionsFileError::BlocksIndex)?;
 
         assert!(transactions_index.has_transaction(&transaction_a.get_hash()).await?);
         assert!(!transactions_index.has_transaction(&transaction_b.get_hash()).await?);
         assert!(!transactions_index.has_transaction(&transaction_c.get_hash()).await?);
 
         // Push D
-        blocks_index.push_block(block_d.clone()).await.map_err(TransactionsFileError::BlocksIndex)?;
+        blocks_index.insert_block(block_d.clone()).await.map_err(TransactionsFileError::BlocksIndex)?;
 
         assert!(transactions_index.has_transaction(&transaction_a.get_hash()).await?);
         assert!(transactions_index.has_transaction(&transaction_b.get_hash()).await?);

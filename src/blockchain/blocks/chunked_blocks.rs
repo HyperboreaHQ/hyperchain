@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value as Json;
 
@@ -33,7 +34,8 @@ pub enum ChunkedBlocksIndexError {
 /// This should be enough for small scale applications.
 pub struct ChunkedBlocksIndex {
     folder: PathBuf,
-    chunk_size: u64
+    chunk_size: u64,
+    tail_block: AtomicU64
 }
 
 impl ChunkedBlocksIndex {
@@ -51,7 +53,8 @@ impl ChunkedBlocksIndex {
 
         Ok(Self {
             folder,
-            chunk_size
+            chunk_size,
+            tail_block: AtomicU64::new(0)
         })
     }
 }
@@ -77,13 +80,13 @@ impl BlocksIndex for ChunkedBlocksIndex {
         // Search for the block
         let block = chunk.iter()
             .flat_map(Block::from_json)
-            .find(|block| block.number == number);
+            .find(|block| block.number() == number);
 
         Ok(block)
     }
 
-    async fn push_block(&self, block: Block) -> Result<bool, Self::Error> {
-        let chunk_number = block.number / self.chunk_size;
+    async fn insert_block(&self, block: Block) -> Result<bool, Self::Error> {
+        let chunk_number = block.number() / self.chunk_size;
 
         let chunk_path = self.folder.join(format!("chunk-{chunk_number}.json"));
 
@@ -110,33 +113,136 @@ impl BlocksIndex for ChunkedBlocksIndex {
         Ok(true)
     }
 
-    async fn get_tail_block(&self) -> Result<Option<Block>, Self::Error> {
-        // Read all the chunks
-        let mut entries = tokio::fs::read_dir(&self.folder).await?;
+    async fn get_head_block(&self) -> Result<Option<Block>, Self::Error> {
+        let mut chunks = tokio::fs::read_dir(&self.folder).await?;
+        let mut head_chunk = None;
 
-        // Search for the latest chunk
-        let mut last_chunk = None;
+        // Search for the lowest chunk number.
+        while let Some(entry) = chunks.next_entry().await? {
+            let name = entry.file_name()
+                .to_string_lossy()
+                .to_string();
 
-        while let Some(entry) = entries.next_entry().await? {
-            if entry.path().is_file() && Some(entry.file_name()) > last_chunk {
-                last_chunk = Some(entry.file_name());
+            if let Some(tail) = name.strip_prefix("chunk-") {
+                if let Some(number) = tail.strip_suffix(".json") {
+                    if let Ok(number) = number.parse::<u64>() {
+                        head_chunk = match head_chunk {
+                            Some(head_chunk) if number < head_chunk => Some(number),
+                            None => Some(number),
+                            _ => head_chunk
+                        };
+                    }
+                }
             }
         }
 
-        // Return None if no chunks found
-        let Some(last_chunk) = last_chunk else {
+        // Return None if no chunks found.
+        let Some(head_chunk) = head_chunk else {
             return Ok(None);
         };
 
-        // Search for the latest block
-        let chunk = tokio::fs::read(self.folder.join(last_chunk)).await?;
+        // Read the first chunk file.
+        let head_chunk = self.folder.join(format!("chunk-{head_chunk}.json"));
 
-        let block = serde_json::from_slice::<Vec<Json>>(&chunk)?
-            .iter()
+        let chunk = tokio::fs::read(&head_chunk).await?;
+        let chunk = serde_json::from_slice::<HashSet<Json>>(&chunk)?;
+
+        // Search for the block with lowest number.
+        let block = chunk.iter()
             .flat_map(Block::from_json)
-            .max_by(|a, b| a.number.cmp(&b.number));
+            .min_by(|a, b| {
+                a.number().cmp(&b.number())
+            });
 
         Ok(block)
+    }
+
+    async fn get_tail_block(&self) -> Result<Option<Block>, Self::Error> {
+        // Lookup the head block.
+        let Some(mut tail_block) = self.get_head_block().await? else {
+            return Ok(None);
+        };
+
+        // Load the latest cached tail block number.
+        let mut tail_block_number = self.tail_block.load(Ordering::Relaxed);
+
+        match tail_block_number.cmp(&tail_block.number()) {
+            // Set it to the head block's number if it's lower that it.
+            std::cmp::Ordering::Less => {
+                tail_block_number = tail_block.number();
+            }
+
+            // Otherwise, if the cached value is greated than the head block's
+            // number - try to lookup this block and if failed - replace it
+            // back to the head block's number.
+            std::cmp::Ordering::Greater => {
+                match self.get_block(tail_block_number).await? {
+                    Some(block) => tail_block = block,
+                    None => tail_block_number = tail_block.number()
+                }
+            }
+
+            _ => ()
+        }
+
+        // Force-update the stored tail block's number in case above happened.
+        self.tail_block.store(tail_block_number, Ordering::Relaxed);
+
+        let mut chunk_number = tail_block_number / self.chunk_size;
+
+        // Go through all the following chunks.
+        loop {
+            // Build path to the chunk file.
+            let chunk_path = self.folder.join(format!("chunk-{chunk_number}.json"));
+
+            // Stop the search if this file doesn't exist.
+            if !chunk_path.exists() {
+                break;
+            }
+
+            // Read the tail block's chunk.
+            let chunk = tokio::fs::read(&chunk_path).await?;
+            let chunk = serde_json::from_slice::<HashSet<Json>>(&chunk)?;
+
+            // List all the blocks from this chunk.
+            let mut blocks = chunk.iter()
+                .flat_map(Block::from_json)
+                .filter(|block| block.number() > tail_block_number)
+                .collect::<Vec<_>>();
+
+            // Sort them in ascending order.
+            blocks.sort_by_key(|block| block.number());
+
+            // Iterate over the blocks in chunk.
+            for block in blocks {
+                // If it's connected to the tail block - update the tail.
+                if block.previous_block() == Some(tail_block.get_hash()) {
+                    tail_block = block;
+                    tail_block_number = tail_block.number();
+                }
+
+                // Otherwise return currently stored tail block.
+                else {
+                    self.tail_block.store(tail_block_number, Ordering::Release);
+
+                    return Ok(Some(tail_block));
+                }
+            }
+
+            chunk_number += 1;
+        }
+
+        self.tail_block.store(tail_block_number, Ordering::Release);
+
+        Ok(Some(tail_block))
+    }
+
+    async fn is_empty(&self) -> Result<bool, Self::Error> {
+        let has_entries = tokio::fs::read_dir(&self.folder).await?
+            .next_entry().await?
+            .is_some();
+
+        Ok(!has_entries)
     }
 }
 
@@ -172,40 +278,50 @@ mod tests {
         assert!(index.get_block(1).await?.is_none());
         assert!(index.get_block(2).await?.is_none());
 
-        assert!(index.get_root_block().await?.is_none());
+        assert!(index.get_head_block().await?.is_none());
         assert!(index.get_tail_block().await?.is_none());
 
         // Push A
-        assert!(index.push_block(block_a.clone()).await?);
+        assert!(index.insert_block(block_a.clone()).await?);
 
         assert_eq!(index.get_block(0).await?, Some(block_a.clone()));
         assert!(index.get_block(1).await?.is_none());
+        assert!(index.get_block(2).await?.is_none());
 
-        assert_eq!(index.get_root_block().await?, Some(block_a.clone()));
+        assert_eq!(index.get_head_block().await?, Some(block_a.clone()));
         assert_eq!(index.get_tail_block().await?, Some(block_a.clone()));
 
         assert!(index.get_next_block(&block_a).await?.is_none());
 
-        // Push B and C
-        assert!(index.push_block(block_b.clone()).await?);
-        assert!(index.push_block(block_c.clone()).await?);
+        // Push C
+        assert!(index.insert_block(block_c.clone()).await?);
+
+        assert_eq!(index.get_block(0).await?, Some(block_a.clone()));
+        assert!(index.get_block(1).await?.is_none());
+        assert_eq!(index.get_block(2).await?, Some(block_c.clone()));
+
+        assert_eq!(index.get_head_block().await?, Some(block_a.clone()));
+        assert_eq!(index.get_tail_block().await?, Some(block_a.clone()));
+
+        // Push B
+        assert!(index.insert_block(block_b.clone()).await?);
 
         assert_eq!(index.get_block(0).await?, Some(block_a.clone()));
         assert_eq!(index.get_block(1).await?, Some(block_b.clone()));
         assert_eq!(index.get_block(2).await?, Some(block_c.clone()));
 
-        assert_eq!(index.get_root_block().await?, Some(block_a.clone()));
+        assert_eq!(index.get_head_block().await?, Some(block_a.clone()));
         assert_eq!(index.get_tail_block().await?, Some(block_c.clone()));
 
         // Push D
-        assert!(index.push_block(block_d.clone()).await?);
+        assert!(index.insert_block(block_d.clone()).await?);
 
         assert_eq!(index.get_block(0).await?, Some(block_a.clone()));
         assert_eq!(index.get_block(1).await?, Some(block_b.clone()));
         assert_eq!(index.get_block(2).await?, Some(block_c.clone()));
         assert_eq!(index.get_block(3).await?, Some(block_d.clone()));
 
-        assert_eq!(index.get_root_block().await?, Some(block_a.clone()));
+        assert_eq!(index.get_head_block().await?, Some(block_a.clone()));
         assert_eq!(index.get_tail_block().await?, Some(block_d.clone()));
 
         assert_eq!(index.get_next_block(&block_a).await?, Some(block_b.clone()));

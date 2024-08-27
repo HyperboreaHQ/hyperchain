@@ -151,7 +151,7 @@ pub trait Blockchain {
             blocks.get_block(start_block_number).await
                 .map_err(BlockchainValidationError::BlocksIndex)?
         } else {
-            blocks.get_root_block().await
+            blocks.get_head_block().await
                 .map_err(BlockchainValidationError::BlocksIndex)?
         };
 

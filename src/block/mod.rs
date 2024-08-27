@@ -1,3 +1,5 @@
+use std::cmp::Ordering;
+
 use serde::{Serialize, Deserialize};
 use serde_json::{json, Value as Json};
 
@@ -359,16 +361,42 @@ impl AsJson for Block {
     }
 }
 
+impl PartialOrd<Block> for Block {
+    #[inline]
+    fn partial_cmp(&self, other: &Block) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Block {
+    #[inline]
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.number().cmp(&other.number())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use crate::block::builder::tests::get_chained;
+
     use super::*;
 
     #[test]
     fn serialize() -> Result<(), AsJsonError> {
-        let block = builder::tests::get_chained().1;
+        let block = get_chained().1;
 
         assert_eq!(Block::from_json(&block.to_json()?)?, block);
 
         Ok(())
+    }
+
+    #[test]
+    fn ord() {
+        let (head, tail, _) = get_chained();
+
+        assert!(head < tail);
+        assert!(tail > head);
+        assert!(head == head);
+        assert!(head != tail);
     }
 }
