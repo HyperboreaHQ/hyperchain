@@ -299,6 +299,12 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
         self
     }
 
+    #[inline]
+    /// Get reference to the shard's backend implementation
+    pub fn backend_ref(&mut self) -> &mut F {
+        &mut self.backend
+    }
+
     async fn send(&self, member: &ShardMember, message: impl Into<ShardMessage>) -> Result<(), ShardError<F::Error>> {
         let message: ShardMessage = message.into();
 
@@ -345,7 +351,7 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
     }
 
     /// Send shard heartbeat message.
-    pub async fn heartbeat(&mut self, shard: ShardMember) -> Result<(), ShardError<F::Error>> {
+    pub async fn send_heartbeat(&mut self, shard: ShardMember) -> Result<(), ShardError<F::Error>> {
         self.send(&shard, ShardMessage::Heartbeat).await?;
 
         let status = match self.subscriptions.remove(&shard) {
@@ -359,6 +365,88 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
         };
 
         self.subscriptions.insert(shard, status);
+
+        Ok(())
+    }
+
+    /// Send shard status update message.
+    pub async fn send_status(&mut self, shard: &ShardMember) -> Result<(), ShardError<F::Error>> {
+        let message = ShardUpdate::Status {
+            head_block: self.backend.get_head_block().await
+                .map_err(ShardError::ShardBackend)?,
+
+            tail_block: self.backend.get_tail_block().await
+                .map_err(ShardError::ShardBackend)?,
+
+            staged_transactions: self.backend.get_staged_transactions().await
+                .map_err(ShardError::ShardBackend)?,
+
+            subscriptions: self.subscriptions.keys()
+                .cloned()
+                .collect(),
+
+            subscribers: self.subscribers.keys()
+                .cloned()
+                .collect()
+        };
+
+        self.send(shard, message).await?;
+
+        Ok(())
+    }
+
+    /// Announce block to the shard members.
+    pub async fn announce_block(&mut self, block: Block) -> Result<(), ShardError<F::Error>> {
+        // Handle new block.
+        self.backend.handle_block(block.clone()).await
+            .map_err(ShardError::ShardBackend)?;
+
+        // Iterate over list of sub members.
+        let members = self.subscriptions.keys().cloned()
+            .chain(self.subscribers.keys().cloned())
+            .collect::<Vec<_>>();
+
+        // Prepare announcement message.
+        let message = ShardUpdate::AnnounceBlocks {
+            blocks: vec![block]
+        };
+
+        for member in members {
+            // Remove this member from subscribers/subscriptions
+            // if announcement has failed.
+            if self.send(&member, message.clone()).await.is_err() {
+                self.subscribers.remove(&member);
+                self.subscriptions.remove(&member);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Announce transaction to the shard members.
+    pub async fn announce_transaction(&mut self, transaction: Transaction) -> Result<(), ShardError<F::Error>> {
+        // Handle new transaction.
+        self.backend.handle_transaction(transaction.clone()).await
+            .map_err(ShardError::ShardBackend)?;
+
+        // Iterate over list of sub members.
+        let members = self.subscriptions.keys().cloned()
+            .chain(self.subscribers.keys().cloned())
+            .collect::<Vec<_>>();
+
+        // Prepare announcement message.
+        let message = ShardUpdate::AnnounceTransactions {
+            transactions: vec![transaction]
+        };
+
+        for member in members {
+            // Remove this member from subscribers/subscriptions
+            // if announcement has failed.
+            if self.send(&member, message.clone()).await.is_err() {
+                self.subscribers.remove(&member);
+                self.subscriptions.remove(&member);
+            }
+        }
 
         Ok(())
     }
@@ -773,7 +861,7 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                 // Send heartbeats.
                 if status.last_out_heartbeat.elapsed() > self.options.min_out_heartbeat_delay {
                     // Unsubscribe from the client if heartbeat has failed.
-                    if self.heartbeat(member.clone()).await.is_err() {
+                    if self.send_heartbeat(member.clone()).await.is_err() {
                         self.subscribers.remove(&member);
                         self.subscriptions.remove(&member);
 
@@ -792,27 +880,8 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
 
                 // Send status updates.
                 if status.last_out_status.elapsed() > self.options.min_out_status_delay {
-                    let message = ShardUpdate::Status {
-                        head_block: self.backend.get_head_block().await
-                            .map_err(ShardError::ShardBackend)?,
-
-                        tail_block: self.backend.get_tail_block().await
-                            .map_err(ShardError::ShardBackend)?,
-
-                        staged_transactions: self.backend.get_staged_transactions().await
-                            .map_err(ShardError::ShardBackend)?,
-
-                        subscriptions: self.subscriptions.keys()
-                            .cloned()
-                            .collect(),
-
-                        subscribers: self.subscribers.keys()
-                            .cloned()
-                            .collect()
-                    };
-
                     // Remove the client if we couldn't sent them a status update.
-                    if self.send(&member, message).await.is_err() {
+                    if self.send_status(&member).await.is_err() {
                         self.subscribers.remove(&member);
                         self.subscriptions.remove(&member);
 
