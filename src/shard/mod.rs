@@ -370,12 +370,23 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
 
     /// Send shard subscription message.
     pub async fn subscribe(&mut self, shard: ShardMember) -> Result<(), ShardError<F::Error>> {
-        // Do not try to subscribe to a member if we've reached
-        // the maximum allowed amount of subscriptions.
-        if self.subscriptions.len() >= self.options.max_subscriptions {
+        // Do not try to subscribe to anybody if it's not allowed.
+        if self.options.max_subscriptions == 0 {
             return Ok(());
         }
 
+        // Shrink list of our subscriptions to free up the space.
+        if self.subscriptions.len() >= self.options.max_subscriptions {
+            let shrinked = self.shrink_subscriptions(self.options.max_subscriptions - 1);
+
+            // Send unsubscribe messages to shrinked clients.
+            for member in shrinked {
+                let _ = self.send(&member, ShardMessage::Unsubscribe).await;
+            }
+        }
+
+        // Send subscribe message, stopping further execution
+        // and throwing an error if the operation has failed.
         self.send(&shard, ShardMessage::Subscribe).await?;
 
         // Remove this member from list of subcribers to prevent
@@ -398,20 +409,18 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
     }
 
     /// Send shard heartbeat message.
-    pub async fn send_heartbeat(&mut self, shard: ShardMember) -> Result<(), ShardError<F::Error>> {
-        self.send(&shard, ShardMessage::Heartbeat).await?;
+    pub async fn send_heartbeat(&mut self, shard: &ShardMember) -> Result<(), ShardError<F::Error>> {
+        self.send(shard, ShardMessage::Heartbeat).await?;
 
-        let status = match self.subscriptions.remove(&shard) {
-            Some(mut status) => {
-                status.last_out_heartbeat = Instant::now();
+        // Update last out heartbeat in the sub status.
+        if let Some(status) = self.subscriptions.get_mut(shard) {
+            status.last_out_heartbeat = Instant::now();
+        }
 
-                status
-            }
-
-            None => ShardMemberStatus::new()
-        };
-
-        self.subscriptions.insert(shard, status);
+        // Update last out heartbeat in the sub status.
+        if let Some(status) = self.subscribers.get_mut(shard) {
+            status.last_out_heartbeat = Instant::now();
+        }
 
         Ok(())
     }
@@ -434,6 +443,15 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
         Ok(())
     }
 
+    /// Send shard members update message.
+    pub async fn send_members(&mut self, shard: &ShardMember) -> Result<(), ShardError<F::Error>> {
+        self.send(shard, ShardUpdate::AnnounceMembers {
+            members: self.subscribers.keys()
+                .cloned()
+                .collect()
+        }).await
+    }
+
     /// Announce block to the shard members.
     pub async fn announce_block(&mut self, block: Block) -> Result<(), ShardError<F::Error>> {
         // Handle new block.
@@ -441,8 +459,8 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
             .map_err(ShardError::ShardBackend)?;
 
         // Iterate over list of sub members.
-        let members = self.subscriptions.keys().cloned()
-            .chain(self.subscribers.keys().cloned())
+        let members = self.subscribers.keys().cloned()
+            .chain(self.subscriptions.keys().cloned())
             .collect::<Vec<_>>();
 
         // Prepare announcement message.
@@ -469,8 +487,8 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
             .map_err(ShardError::ShardBackend)?;
 
         // Iterate over list of sub members.
-        let members = self.subscriptions.keys().cloned()
-            .chain(self.subscribers.keys().cloned())
+        let members = self.subscribers.keys().cloned()
+            .chain(self.subscriptions.keys().cloned())
             .collect::<Vec<_>>();
 
         // Prepare announcement message.
@@ -488,6 +506,87 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
         }
 
         Ok(())
+    }
+
+    /// Shrink list of our shard's subscribers to a given number.
+    ///
+    /// Returns list of shrinked clients.
+    pub fn shrink_subscribers(&mut self, shrink_to: usize) -> Vec<ShardMember> {
+        // Do nothing if list is already shrinked.
+        if self.subscribers.len() <= shrink_to {
+            return vec![];
+        }
+
+        let mut shrinked = Vec::with_capacity({
+            self.subscribers.len() - shrink_to
+        });
+
+        let mut subscribers = self.subscribers.iter()
+            .map(|(member, status)| (member.clone(), status.clone()))
+            .collect::<Vec<_>>();
+
+        // Sort in a way that tail elements will have smallest
+        // tail block number.
+        subscribers.sort_by(|(_, a), (_, b)| {
+            let a = a.tail_block.as_ref().map(|block| block.number());
+            let b = b.tail_block.as_ref().map(|block| block.number());
+
+            b.cmp(&a)
+        });
+
+        // Remove most useless subscribers.
+        while self.subscribers.len() > shrink_to {
+            let Some((member, _)) = subscribers.pop() else {
+                break;
+            };
+
+            self.subscribers.remove(&member);
+
+            shrinked.push(member);
+        }
+
+        shrinked
+    }
+
+    /// Shrink list of shards to which we are subscribed
+    /// to a given number.
+    ///
+    /// Returns list of shrinked clients.
+    pub fn shrink_subscriptions(&mut self, shrink_to: usize) -> Vec<ShardMember> {
+        // Do nothing if list is already shrinked.
+        if self.subscriptions.len() <= shrink_to {
+            return vec![];
+        }
+
+        let mut shrinked = Vec::with_capacity({
+            self.subscriptions.len() - shrink_to
+        });
+
+        let mut subscriptions = self.subscriptions.iter()
+            .map(|(member, status)| (member.clone(), status.clone()))
+            .collect::<Vec<_>>();
+
+        // Sort in a way that tail elements will have smallest
+        // tail block number.
+        subscriptions.sort_by(|(_, a), (_, b)| {
+            let a = a.tail_block.as_ref().map(|block| block.number());
+            let b = b.tail_block.as_ref().map(|block| block.number());
+
+            b.cmp(&a)
+        });
+
+        // Remove most useless subscriptions.
+        while self.subscriptions.len() > shrink_to {
+            let Some((member, _)) = subscriptions.pop() else {
+                break;
+            };
+
+            self.subscriptions.remove(&member);
+
+            shrinked.push(member);
+        }
+
+        shrinked
     }
 
     /// Poll shard updates and process them.
@@ -562,11 +661,7 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                     // Otherwise if enabled send them a list of other members
                     // on which they could subscribe.
                     else if self.options.announce_members_on_failed_subscription {
-                        let _ = self.send(&member, ShardUpdate::AnnounceMembers {
-                            members: self.subscribers.keys()
-                                .cloned()
-                                .collect()
-                        }).await;
+                        let _ = self.send_members(&member).await;
                     }
                 }
 
@@ -923,57 +1018,22 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
 
         // Shrink list of subscribers to max allowed amount.
         if self.subscribers.len() > self.options.max_subscribers {
-            let mut subscribers = self.subscribers.iter()
-                .map(|(member, status)| (member.clone(), status.clone()))
-                .collect::<Vec<_>>();
-
-            // Sort in a way that tail elements will have smallest
-            // tail block number.
-            subscribers.sort_by(|(_, a), (_, b)| {
-                let a = a.tail_block.as_ref().map(|block| block.number());
-                let b = b.tail_block.as_ref().map(|block| block.number());
-
-                b.cmp(&a)
-            });
-
-            // Remove most useless subscribers.
-            while self.subscribers.len() > self.options.max_subscribers {
-                let Some((member, _)) = subscribers.pop() else {
-                    break;
-                };
-
-                self.subscribers.remove(&member);
-            }
+            self.shrink_subscribers(self.options.max_subscribers);
         }
 
         // Shrink list of subscriptions to max allowed amount.
         if self.subscriptions.len() > self.options.max_subscriptions {
-            let mut subscriptions = self.subscriptions.iter()
-                .map(|(member, status)| (member.clone(), status.clone()))
-                .collect::<Vec<_>>();
+            let shrinked = self.shrink_subscriptions(self.options.max_subscriptions);
 
-            // Sort in a way that tail elements will have smallest
-            // tail block number.
-            subscriptions.sort_by(|(_, a), (_, b)| {
-                let a = a.tail_block.as_ref().map(|block| block.number());
-                let b = b.tail_block.as_ref().map(|block| block.number());
-
-                b.cmp(&a)
-            });
-
-            // Remove most useless subscribers.
-            while self.subscriptions.len() > self.options.max_subscriptions {
-                let Some((member, _)) = subscriptions.pop() else {
-                    break;
-                };
-
-                self.subscriptions.remove(&member);
+            // Send unsubscribe messages to shrinked clients.
+            for member in shrinked {
+                let _ = self.send(&member, ShardMessage::Unsubscribe).await;
             }
         }
 
         // Perform timer checks.
-        let members = self.subscriptions.keys().cloned()
-            .chain(self.subscribers.keys().cloned())
+        let members = self.subscribers.keys().cloned()
+            .chain(self.subscriptions.keys().cloned())
             .collect::<Vec<_>>();
 
         for member in members {
@@ -985,7 +1045,7 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                 // Send heartbeats.
                 if status.last_out_heartbeat.elapsed() > self.options.min_out_heartbeat_delay {
                     // Unsubscribe from the client if heartbeat has failed.
-                    if self.send_heartbeat(member.clone()).await.is_err() {
+                    if self.send_heartbeat(&member).await.is_err() {
                         self.subscribers.remove(&member);
                         self.subscriptions.remove(&member);
 
