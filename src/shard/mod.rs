@@ -89,6 +89,11 @@ pub struct ShardOptions {
     /// Default is 32.
     pub max_subscribers: usize,
 
+    /// Maximal amount of clients to which we can subscribe.
+    ///
+    /// Default is 32.
+    pub max_subscriptions: usize,
+
     /// If true, then shard will remember latest status messages
     /// for every connected member. This info will be used to
     /// not to send some announcements, or to send them if
@@ -202,6 +207,7 @@ impl Default for ShardOptions {
 
             accept_subscriptions: true,
             max_subscribers: 32,
+            max_subscriptions: 32,
 
             remember_subscribers_statuses: true,
             announce_members_on_failed_subscription: true,
@@ -364,6 +370,12 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
 
     /// Send shard subscription message.
     pub async fn subscribe(&mut self, shard: ShardMember) -> Result<(), ShardError<F::Error>> {
+        // Do not try to subscribe to a member if we've reached
+        // the maximum allowed amount of subscriptions.
+        if self.subscriptions.len() >= self.options.max_subscriptions {
+            return Ok(());
+        }
+
         self.send(&shard, ShardMessage::Subscribe).await?;
 
         // Remove this member from list of subcribers to prevent
@@ -732,6 +744,12 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                                 // we are subscribed.
                                 if self.options.subscribe_on_announced_members && self.subscriptions.contains_key(&member) {
                                     while !members.is_empty() {
+                                        // Stop subscribing to clients if we've reached
+                                        // max allowed amount of subscriptions.
+                                        if self.subscriptions.len() >= self.options.max_subscriptions {
+                                            break;
+                                        }
+
                                         let index = if self.options.randomly_choose_announced_members {
                                             // Magic typecast for 32 bit systems
                                             (safe_random_u64() % (usize::MAX as u64)) as usize % members.len()
@@ -900,6 +918,56 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                         }
                     }
                 }
+            }
+        }
+
+        // Shrink list of subscribers to max allowed amount.
+        if self.subscribers.len() > self.options.max_subscribers {
+            let mut subscribers = self.subscribers.iter()
+                .map(|(member, status)| (member.clone(), status.clone()))
+                .collect::<Vec<_>>();
+
+            // Sort in a way that tail elements will have smallest
+            // tail block number.
+            subscribers.sort_by(|(_, a), (_, b)| {
+                let a = a.tail_block.as_ref().map(|block| block.number());
+                let b = b.tail_block.as_ref().map(|block| block.number());
+
+                b.cmp(&a)
+            });
+
+            // Remove most useless subscribers.
+            while self.subscribers.len() > self.options.max_subscribers {
+                let Some((member, _)) = subscribers.pop() else {
+                    break;
+                };
+
+                self.subscribers.remove(&member);
+            }
+        }
+
+        // Shrink list of subscriptions to max allowed amount.
+        if self.subscriptions.len() > self.options.max_subscriptions {
+            let mut subscriptions = self.subscriptions.iter()
+                .map(|(member, status)| (member.clone(), status.clone()))
+                .collect::<Vec<_>>();
+
+            // Sort in a way that tail elements will have smallest
+            // tail block number.
+            subscriptions.sort_by(|(_, a), (_, b)| {
+                let a = a.tail_block.as_ref().map(|block| block.number());
+                let b = b.tail_block.as_ref().map(|block| block.number());
+
+                b.cmp(&a)
+            });
+
+            // Remove most useless subscribers.
+            while self.subscriptions.len() > self.options.max_subscriptions {
+                let Some((member, _)) = subscriptions.pop() else {
+                    break;
+                };
+
+                self.subscriptions.remove(&member);
             }
         }
 
