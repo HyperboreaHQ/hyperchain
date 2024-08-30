@@ -14,8 +14,6 @@ pub enum BasicShardBackendError<A, B, C> {
     TransactionsIndex(C)
 }
 
-type Validator<T> = Box<dyn Fn(&T) -> bool + Send + Sync>;
-
 /// Shard backend for automatic data processing.
 ///
 /// This backend will automatically handle incoming
@@ -36,7 +34,13 @@ pub struct BasicShardBackend<T> {
     block_validator: Option<Validator<Block>>,
 
     /// This function is used to validate transactions before handling them.
-    transaction_validator: Option<Validator<Transaction>>
+    transaction_validator: Option<Validator<Transaction>>,
+
+    /// This function is called after the block is handled by the backend.
+    block_handler: Option<Handler<Block>>,
+
+    /// This function is called after the transaction is handled by the backend.
+    transaction_handler: Option<Handler<Transaction>>
 }
 
 impl<T: Blockchain> BasicShardBackend<T> {
@@ -46,24 +50,10 @@ impl<T: Blockchain> BasicShardBackend<T> {
             blockchain,
             staged_transactions: HashMap::new(),
             block_validator: None,
-            transaction_validator: None
+            transaction_validator: None,
+            block_handler: None,
+            transaction_handler: None
         }
-    }
-
-    #[inline]
-    /// Change blocks validation callback.
-    pub fn with_block_validator(mut self, validator: impl Fn(&Block) -> bool + Send + Sync + 'static) -> Self {
-        self.block_validator = Some(Box::new(validator));
-
-        self
-    }
-
-    #[inline]
-    /// Change transactions validation callback.
-    pub fn with_transaction_validator(mut self, validator: impl Fn(&Transaction) -> bool + Send + Sync + 'static) -> Self {
-        self.transaction_validator = Some(Box::new(validator));
-
-        self
     }
 }
 
@@ -132,8 +122,15 @@ impl<T: Blockchain + Send + Sync> ShardBackend for BasicShardBackend<T> {
 
         // Try inserting the block to the index.
         let result = self.blockchain.blocks_index_ref()
-            .insert_block(block).await
+            .insert_block(block.clone()).await
             .map_err(BasicShardBackendError::BlocksIndex)?;
+
+        // Handle block if the callback is specified.
+        if result {
+            if let Some(handler) = &self.block_handler {
+                handler(&block);
+            }
+        }
 
         // If block has been indexed - remove transactions
         // which were stabilized by it.
@@ -174,8 +171,44 @@ impl<T: Blockchain + Send + Sync> ShardBackend for BasicShardBackend<T> {
         }
 
         // Stage the transaction.
-        let result = self.staged_transactions.insert(transaction.get_hash(), transaction);
+        let result = self.staged_transactions.insert(
+            transaction.get_hash(),
+            transaction.clone()
+        );
 
-        Ok(result.is_some())
+        // Handle transaction if the callback is specified.
+        if result.is_some() {
+            if let Some(handler) = &self.transaction_handler {
+                handler(&transaction);
+            }
+
+            return Ok(true);
+        }
+
+        Ok(false)
+    }
+}
+
+impl<T> ValidatableShardBackend for BasicShardBackend<T> {
+    #[inline]
+    fn set_block_validator(&mut self, validator: Validator<Block>) {
+        self.block_validator = Some(validator);
+    }
+
+    #[inline]
+    fn set_transaction_validator(&mut self, validator: Validator<Transaction>) {
+        self.transaction_validator = Some(validator);
+    }
+}
+
+impl<T> HandlableShardBackend for BasicShardBackend<T> {
+    #[inline]
+    fn set_block_handler(&mut self, handler: Handler<Block>) {
+        self.block_handler = Some(handler);
+    }
+
+    #[inline]
+    fn set_transaction_handler(&mut self, handler: Handler<Transaction>) {
+        self.transaction_handler = Some(handler);
     }
 }

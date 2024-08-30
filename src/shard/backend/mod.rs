@@ -50,3 +50,60 @@ pub trait ShardBackend {
     /// Return true if the transaction was accepted.
     async fn handle_transaction(&mut self, transaction: Transaction) -> Result<bool, Self::Error>;
 }
+
+pub(crate) type Validator<T> = Box<dyn Fn(&T) -> bool + Send + Sync>;
+
+/// Shard backend that implements arbitrary functions
+/// to validate blocks and transactions before handling.
+pub trait ValidatableShardBackend: Sized {
+    /// Change blocks validator.
+    fn set_block_validator(&mut self, validator: Validator<Block>);
+
+    /// Change transactions validator.
+    fn set_transaction_validator(&mut self, validator: Validator<Transaction>);
+
+    #[inline]
+    /// Get backend with changed blocks validator.
+    fn with_block_validator(mut self, validator: Validator<Block>) -> Self {
+        self.set_block_validator(validator);
+
+        self
+    }
+
+    #[inline]
+    /// Get backend with changed transactions validator.
+    fn with_transaction_validator(mut self, validator: Validator<Transaction>) -> Self {
+        self.set_transaction_validator(validator);
+
+        self
+    }
+}
+
+pub(crate) type Handler<T> = Box<dyn Fn(&T) + Send + Sync>;
+
+/// Shard backend that implements methods
+/// to handle new blocks and transactions
+/// in the blockchain.
+pub trait HandlableShardBackend: Sized {
+    /// Change blocks handler.
+    fn set_block_handler(&mut self, handler: Handler<Block>);
+
+    /// Change transactions handler.
+    fn set_transaction_handler(&mut self, handler: Handler<Transaction>);
+
+    #[inline]
+    /// Get backend with changed blocks handler.
+    fn with_block_handler(mut self, handler: Handler<Block>) -> Self {
+        self.set_block_handler(handler);
+
+        self
+    }
+
+    #[inline]
+    /// Get backend with changed transactions handler.
+    fn with_transaction_handler(mut self, handler: Handler<Transaction>) -> Self {
+        self.set_transaction_handler(handler);
+
+        self
+    }
+}
