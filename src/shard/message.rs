@@ -102,15 +102,16 @@ pub enum ShardUpdate {
         tail_block: Option<Block>,
 
         /// List of known staged transactions' hashes.
-        staged_transactions: Vec<Hash>,
+        staged_transactions: Vec<Hash>
+    },
 
-        /// Announced list of clients to which
-        /// the shard's owner is subscribed.
-        subscriptions: Vec<ShardMember>,
-
-        /// Announced list of clients
-        /// subscribed to this shard.
-        subscribers: Vec<ShardMember>
+    /// Announce members subscribed to some shard.
+    ///
+    /// This message is used to allow new members to subscribe
+    /// to the shards mesh network even when your own subscribers
+    /// list got to a limit.
+    AnnounceMembers {
+        members: Vec<ShardMember>
     },
 
     /// Announce blockchain's blocks.
@@ -141,9 +142,7 @@ impl AsJson for ShardUpdate {
             Self::Status {
                 head_block,
                 tail_block,
-                staged_transactions,
-                subscriptions,
-                subscribers
+                staged_transactions
             } => {
                 Ok(json!({
                     "format": 1,
@@ -161,18 +160,18 @@ impl AsJson for ShardUpdate {
 
                         "transactions": staged_transactions.iter()
                             .map(Hash::to_base64)
-                            .collect::<Vec<_>>(),
-
-                        "subscriptions": subscriptions.iter()
-                            .map(ShardMember::to_json)
-                            .collect::<Result<Vec<_>, _>>()?,
-
-                        "subscribers": subscribers.iter()
-                            .map(ShardMember::to_json)
-                            .collect::<Result<Vec<_>, _>>()?
+                            .collect::<Vec<_>>()
                     }
                 }))
             }
+
+            Self::AnnounceMembers { members } => Ok(json!({
+                "format": 1,
+                "type": "announce_members",
+                "members": members.iter()
+                    .map(ShardMember::to_json)
+                    .collect::<Result<Vec<_>, _>>()?
+            })),
 
             Self::AnnounceBlocks { blocks } => Ok(json!({
                 "format": 1,
@@ -245,27 +244,20 @@ impl AsJson for ShardUpdate {
                                         .collect::<Result<Vec<_>, _>>()
                                 })
                                 .ok_or_else(|| AsJsonError::FieldNotFound("body.transactions"))?
-                                .map_err(|err| AsJsonError::Other(err.into()))?,
-
-                            subscriptions: body.get("subscriptions")
-                                .and_then(Json::as_array)
-                                .map(|subscribers| {
-                                    subscribers.iter()
-                                        .map(ShardMember::from_json)
-                                        .collect::<Result<Vec<_>, _>>()
-                                })
-                                .ok_or_else(|| AsJsonError::FieldNotFound("body.subscriptions"))??,
-
-                            subscribers: body.get("subscribers")
-                                .and_then(Json::as_array)
-                                .map(|subscribers| {
-                                    subscribers.iter()
-                                        .map(ShardMember::from_json)
-                                        .collect::<Result<Vec<_>, _>>()
-                                })
-                                .ok_or_else(|| AsJsonError::FieldNotFound("body.subscribers"))??
+                                .map_err(|err| AsJsonError::Other(err.into()))?
                         })
                     }
+
+                    "announce_members" => Ok(Self::AnnounceMembers {
+                        members: json.get("members")
+                            .and_then(Json::as_array)
+                            .map(|members| {
+                                members.iter()
+                                    .map(ShardMember::from_json)
+                                    .collect::<Result<Vec<_>, _>>()
+                            })
+                            .ok_or_else(|| AsJsonError::FieldNotFound("members"))??
+                    }),
 
                     "announce_blocks" => Ok(Self::AnnounceBlocks {
                         blocks: json.get("blocks")
@@ -317,9 +309,7 @@ pub(crate) mod tests {
             ShardUpdate::Status {
                 head_block: None,
                 tail_block: None,
-                staged_transactions: vec![],
-                subscriptions: vec![],
-                subscribers: vec![]
+                staged_transactions: vec![]
             },
 
             ShardUpdate::Status {
@@ -328,11 +318,11 @@ pub(crate) mod tests {
                 staged_transactions: vec![
                     get_message().0.get_hash(),
                     get_announcement().0.get_hash()
-                ],
-                subscriptions: vec![
-                    get_member()
-                ],
-                subscribers: vec![
+                ]
+            },
+
+            ShardUpdate::AnnounceMembers {
+                members: vec![
                     get_member(),
                     get_member()
                 ]

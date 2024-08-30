@@ -98,6 +98,38 @@ pub struct ShardOptions {
     /// Default is true.
     pub remember_subscribers_statuses: bool,
 
+    /// Send list of shard members which are subscribed to you
+    /// to a client which has tried to subscribe on you
+    /// but failed due to limited number of allowed subcriptions.
+    ///
+    /// If enabled, this will allow this client to connect to
+    /// some of the members of your own shard, thus connecting
+    /// it to the mesh network.
+    ///
+    /// Default is true.
+    pub announce_members_on_failed_subscription: bool,
+
+    /// Subscribe to clients which are announced by
+    /// the shards owners to which you are subscribed.
+    ///
+    /// Announcements from clients on which you are not
+    /// subscribed will be ignored.
+    ///
+    /// Default is true.
+    pub subscribe_on_announced_members: bool,
+
+    /// Use secure random numbers generator to choose
+    /// announced members to which the shard should subscribe.
+    ///
+    /// If disabled, shard will subscribe on members
+    /// in the same order as how they were announced.
+    ///
+    /// This option is used only when `subscribe_on_announced_members`
+    /// is enabled.
+    ///
+    /// Default is true.
+    pub randomly_choose_announced_members: bool,
+
     /// If true, then shard will send blocks which are
     /// not known to a client when this client announces
     /// his shard status.
@@ -172,6 +204,9 @@ impl Default for ShardOptions {
             max_subscribers: 32,
 
             remember_subscribers_statuses: true,
+            announce_members_on_failed_subscription: true,
+            subscribe_on_announced_members: true,
+            randomly_choose_announced_members: true,
 
             send_blocks_diff_on_statuses: true,
             max_blocks_diff_size: 16,
@@ -379,15 +414,7 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                 .map_err(ShardError::ShardBackend)?,
 
             staged_transactions: self.backend.get_staged_transactions().await
-                .map_err(ShardError::ShardBackend)?,
-
-            subscriptions: self.subscriptions.keys()
-                .cloned()
-                .collect(),
-
-            subscribers: self.subscribers.keys()
-                .cloned()
-                .collect()
+                .map_err(ShardError::ShardBackend)?
         };
 
         self.send(shard, message).await?;
@@ -509,6 +536,7 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                         // 3. We are not subscribed to this member ourselves.
                         !self.subscriptions.contains_key(&member);
 
+                    // Remember the client if it's allowed to subscribe.
                     if allow_subscription {
                         let mut status = self.subscribers.remove(&member)
                             .unwrap_or_else(ShardMemberStatus::new);
@@ -517,6 +545,16 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                         status.last_in_heartbeat = Instant::now();
 
                         self.subscribers.insert(member.clone(), status);
+                    }
+
+                    // Otherwise if enabled send them a list of other members
+                    // on which they could subscribe.
+                    else if self.options.announce_members_on_failed_subscription {
+                        let _ = self.send(&member, ShardUpdate::AnnounceMembers {
+                            members: self.subscribers.keys()
+                                .cloned()
+                                .collect()
+                        }).await;
                     }
                 }
 
@@ -543,8 +581,7 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                             ShardUpdate::Status {
                                 head_block,
                                 tail_block,
-                                staged_transactions,
-                                ..
+                                staged_transactions
                             } => {
                                 // Handle head block.
                                 if let Some(head_block) = head_block.clone() {
@@ -685,6 +722,25 @@ impl<T: HttpClient, F: ShardBackend + Send + Sync> Shard<T, F> {
                                     let _ = self.send(&member, ShardUpdate::AnnounceTransactions {
                                         transactions: diff_transactions
                                     }).await;
+                                }
+                            }
+
+                            // Handle members announcement.
+                            ShardUpdate::AnnounceMembers { mut members } => {
+                                // If we're allowed to subscribe on announced members
+                                // and this announcement was sent from a client to which
+                                // we are subscribed.
+                                if self.options.subscribe_on_announced_members && self.subscriptions.contains_key(&member) {
+                                    while !members.is_empty() {
+                                        let index = if self.options.randomly_choose_announced_members {
+                                            // Magic typecast for 32 bit systems
+                                            (safe_random_u64() % (usize::MAX as u64)) as usize % members.len()
+                                        } else {
+                                            0
+                                        };
+
+                                        let _ = self.subscribe(members.remove(index)).await;
+                                    }
                                 }
                             }
 
