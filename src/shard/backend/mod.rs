@@ -1,3 +1,6 @@
+use std::pin::Pin;
+use std::future::Future;
+
 use crate::block::prelude::*;
 
 mod basic_shard;
@@ -51,7 +54,7 @@ pub trait ShardBackend {
     async fn handle_transaction(&mut self, transaction: Transaction) -> Result<bool, Self::Error>;
 }
 
-pub(crate) type Validator<T> = Box<dyn Fn(&T) -> bool + Send + Sync>;
+pub(crate) type Validator<T> = Box<dyn Fn(&T) -> Pin<Box<dyn Future<Output = bool> + Send + Sync>> + Send + Sync>;
 
 /// Shard backend that implements arbitrary functions
 /// to validate blocks and transactions before handling.
@@ -79,7 +82,7 @@ pub trait ValidatableShardBackend: Sized {
     }
 }
 
-pub(crate) type Handler<T> = Box<dyn Fn(&T) + Send + Sync>;
+pub(crate) type Handler<T> = Box<dyn Fn(&T) -> Pin<Box<dyn Future<Output = ()> + Send + Sync>> + Send + Sync>;
 
 /// Shard backend that implements methods
 /// to handle new blocks and transactions

@@ -115,7 +115,7 @@ impl<T: Blockchain + Send + Sync> ShardBackend for BasicShardBackend<T> {
 
         // Validate it if callback is specified.
         if let Some(validator) = &self.block_validator {
-            if !validator(&block) {
+            if !validator(&block).await {
                 return Ok(false);
             }
         }
@@ -128,7 +128,7 @@ impl<T: Blockchain + Send + Sync> ShardBackend for BasicShardBackend<T> {
         // Handle block if the callback is specified.
         if result {
             if let Some(handler) = &self.block_handler {
-                handler(&block);
+                handler(&block).await;
             }
         }
 
@@ -165,7 +165,7 @@ impl<T: Blockchain + Send + Sync> ShardBackend for BasicShardBackend<T> {
 
         // Validate transaction if callback is specified.
         if let Some(validator) = &self.transaction_validator {
-            if !validator(&transaction) {
+            if !validator(&transaction).await {
                 return Ok(false);
             }
         }
@@ -179,7 +179,7 @@ impl<T: Blockchain + Send + Sync> ShardBackend for BasicShardBackend<T> {
         // Handle transaction if the callback is specified.
         if result.is_some() {
             if let Some(handler) = &self.transaction_handler {
-                handler(&transaction);
+                handler(&transaction).await;
             }
 
             return Ok(true);
